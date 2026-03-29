@@ -1,0 +1,22 @@
+{
+  "name": "ix-codex-plugin",
+  "interface": {
+    "displayName": "ix-codex-plugin"
+  },
+  "plugins": [
+    {
+      "name": "ix-memory",
+      "source": {
+        "source": "local",
+        "path": "./plugins/ix-memory"
+      },
+      "description": "Ix Memory integration — cognitive skills, agent playbooks, and Codex hooks for graph-aware engineering",
+      "version": "2.3.0",
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -1,0 +1,193 @@
+# ix-codex-plugin
+
+A Codex plugin that turns Codex into a graph-reasoning engineering agent using [Ix Memory](https://github.com/ix-infrastructure/IX-Memory) as its structured memory backend.
+
+Codex + Ix = reasoning engine + persistent code knowledge graph. Skills are cognitive abstractions, not CLI wrappers.
+
+## What This Repo Replicates
+
+This repo now mirrors the `ix-claude-plugin` content model as closely as Codex currently allows:
+- the same seven high-level cognitive skills
+- the same graph-first operating guidance
+- the same agent playbooks, shipped here as reusable docs under `agents/`
+- hook behavior that front-runs shell search/read actions with Ix context
+
+Codex runtime limitation:
+- Codex does not currently expose Claude-style hook matchers for `Grep`, `Glob`, `Read`, edit preflight hooks, or the Claude plugin manifest format.
+- Because of that, the Codex port matches the Claude plugin semantically, but not event-for-event.
+
+## Requirements
+
+- [Ix Memory](https://github.com/ix-infrastructure/IX-Memory) installed and running (`ix status` returns ok)
+- `python3` in PATH for the installer and hook scripts
+- `ripgrep` (`rg`) is recommended
+
+Ix Pro is optional. If present, the `UserPromptSubmit` hook injects the Ix session briefing once per 10 minutes, matching the Claude plugin behavior.
+
+## Skills
+
+High-level cognitive skills:
+
+| Skill | What it does | Key rule |
+|-------|--------------|----------|
+| `ix-understand [target]` | Build a mental model of a system or the whole repo | Graph only; no code reads |
+| `ix-investigate <symbol>` | Deep dive: what it is, how it connects, execution path | Graph first; one symbol read max |
+| `ix-impact <target>` | Change risk: blast radius, affected systems, test targets | Depth scales with risk |
+| `ix-plan <targets...>` | Risk-ordered implementation plan for a set of changes | Parallel impact; finds shared dependents |
+| `ix-debug <symptom>` | Root cause analysis from symptom to candidates | Minimal source reads at suspects only |
+| `ix-architecture [scope]` | Design health: coupling, smells, hotspots | Graph only; never reads source |
+| `ix-docs <target> [--full] [--style narrative|reference|hybrid] [--split] [--single-doc] [--out <path>]` | Generate narrative-first documentation with a selective reference layer | Default is onboarding-focused; `--full --style hybrid` goes deepest |
+
+## Agent Playbooks
+
+For parity with `ix-claude-plugin`, this repo also ships the same playbooks in [`agents/`](./agents):
+
+| Playbook | Purpose |
+|----------|---------|
+| `ix-explorer` | General-purpose graph exploration |
+| `ix-system-explorer` | Full architectural model of a codebase or region |
+| `ix-bug-investigator` | Root cause analysis from symptom to candidates |
+| `ix-safe-refactor-planner` | Blast radius plus safe change sequencing |
+| `ix-architecture-auditor` | Structural health report with ranked improvements |
+
+These are documentation artifacts today. Codex local plugins do not currently install them as first-class custom agents through `.codex-plugin/plugin.json`.
+
+## Automatic Hooks
+
+| Trigger | Codex hook | Effect |
+|---------|------------|--------|
+| Codex session starts | `SessionStart` | Injects Ix operating guidance and the graph-first rules |
+| User sends a prompt | `UserPromptSubmit` | Injects `ix briefing` once per 10 min if Ix Pro is available |
+| Codex runs `Bash` with `grep`/`rg` | `PreToolUse` | Front-runs with `ix text` plus `ix locate` and injects a concise summary |
+| Codex runs `Bash` with read-style commands (`cat`, `sed`, `head`, `tail`, `awk`) | `PreToolUse` | Front-runs with `ix inventory`, `ix overview`, and `ix impact` for the target file |
+| Codex finishes responding | `Stop` | Runs `ix map` asynchronously to refresh the graph |
+
+Unsupported Claude-only hook points today:
+- `Grep`
+- `Glob`
+- `Read`
+- edit preflight hooks
+- write post-hooks in the current Codex hook bundle
+
+## Install
+
+### Quick install
+
+```bash
+git clone git@github.com:your-org/ix-codex-plugin.git
+cd ix-codex-plugin
+./install.sh --home --plugin --hooks
+```
+
+Then restart Codex and install or enable `ix-memory` from the `ix-codex-plugin` marketplace.
+
+If you only want the plugin and not the hooks:
+
+```bash
+./install.sh --home --plugin
+```
+
+If you only want a repo-local install:
+
+```bash
+./install.sh --repo /path/to/project --plugin --hooks
+```
+
+PowerShell:
+
+```powershell
+git clone git@github.com:your-org/ix-codex-plugin.git
+cd ix-codex-plugin
+.\install.ps1 --home --plugin --hooks
+```
+
+### What gets installed
+
+Plugin:
+- `plugins/ix-memory/.codex-plugin/plugin.json`
+- `plugins/ix-memory/skills/*`
+- `.agents/plugins/marketplace.json`
+
+Hooks:
+- `.codex/config.toml`
+- `.codex/hooks.json`
+- `.codex/hooks/common.py`
+- `.codex/hooks/session_start.py`
+- `.codex/hooks/user_prompt_submit.py`
+- `.codex/hooks/pre_tool_use.py`
+- `.codex/hooks/stop.py`
+
+### Home-local install
+
+```bash
+./install.sh --home --plugin --hooks --mode copy
+```
+
+This writes:
+- `~/.codex/plugins/ix-memory`
+- `~/.agents/plugins/marketplace.json`
+- `~/.codex/config.toml`
+- `~/.codex/hooks.json`
+- `~/.codex/hooks/*.py`
+
+### Repo-local install
+
+```bash
+./install.sh --repo /path/to/project --plugin --hooks --mode copy
+```
+
+This writes:
+- `/path/to/project/plugins/ix-memory`
+- `/path/to/project/.agents/plugins/marketplace.json`
+- `/path/to/project/.codex/config.toml`
+- `/path/to/project/.codex/hooks.json`
+- `/path/to/project/.codex/hooks/*.py`
+
+### Symlink mode for local development
+
+```bash
+./install.sh --repo /path/to/project --plugin --hooks --mode symlink
+```
+
+### Help
+
+```bash
+./install.sh --help
+```
+
+```powershell
+.\install.ps1 --help
+```
+
+## Manual Install
+
+Codex also supports manual local plugin installation through a marketplace file.
+
+### Repo marketplace
+
+1. Copy `plugins/ix-memory` into `<repo>/plugins/ix-memory`.
+2. Add or update `<repo>/.agents/plugins/marketplace.json` with an entry pointing to `./plugins/ix-memory`.
+3. Restart Codex.
+4. Install `ix-memory` from that repo marketplace.
+
+### Personal marketplace
+
+1. Copy `plugins/ix-memory` into `~/.codex/plugins/ix-memory`.
+2. Add or update `~/.agents/plugins/marketplace.json` with `source.path` pointing to `./.codex/plugins/ix-memory`.
+3. Restart Codex.
+4. Install `ix-memory`.
+
+### Hooks without the installer
+
+Copy these into either the repo or `~/.codex`:
+- `.codex/config.toml`
+- `.codex/hooks.json`
+- `.codex/hooks/common.py`
+- `.codex/hooks/session_start.py`
+- `.codex/hooks/user_prompt_submit.py`
+- `.codex/hooks/pre_tool_use.py`
+- `.codex/hooks/stop.py`
+
+## Repo Guidance
+
+The repo-level operating guide lives in [`AGENTS.md`](./AGENTS.md). It carries the Claude plugin's graph-first reasoning model, skill reference, token-budget rules, and Codex-specific notes about hook/runtime differences.
