@@ -74,7 +74,7 @@ Unsupported Claude-only hook points today:
 ### Quick install
 
 ```bash
-git clone git@github.com:your-org/ix-codex-plugin.git
+git clone git@github.com:ix-infrastructure/ix-codex-plugin.git
 cd ix-codex-plugin
 ./install.sh --home --plugin --hooks
 ```
