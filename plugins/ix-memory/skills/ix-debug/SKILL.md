@@ -6,6 +6,15 @@ argument-hint: <symptom, failing function, or suspected component>
 
 Check `command -v ix` first. If unavailable, use Grep + Read as fallback.
 
+## Graph freshness (always check before Phase 1)
+
+Read the session briefing context. If it reports `stale: true`:
+- Label every graph-backed claim in your output as `[stale graph]`.
+- Set confidence ceiling to `low` regardless of how clean individual symbol lookups appear.
+- Note in the output: "Graph freshness: STALE — confidence is capped at low."
+
+Do not skip this check. A fresh-looking symbol response does not mean the graph is current.
+
 ## Goal
 
 Answer: where in the execution path is this likely failing, and why? Stop once you have 1-3 root cause candidates with supporting evidence.
@@ -13,7 +22,7 @@ Answer: where in the execution path is this likely failing, and why? Stop once y
 ## Phase 1 — Locate the entry point (always)
 
 ```bash
-ix locate $ARGUMENTS --limit 5 --format json
+ix locate $ARGUMENTS --format json
 ```
 
 If `$ARGUMENTS` is a symptom description rather than a symbol name, also run:
@@ -22,6 +31,8 @@ ix text "$ARGUMENTS" --limit 10 --format json
 ```
 
 Identify the most likely entry point (where the failure originates or first manifests).
+
+**Qualified member lookup rule:** If you attempt `ix locate <Class.method>` and it fails to resolve, stay scoped to the parent class — do NOT retry with just the method name as a bare symbol. Bare member names resolve to unrelated entities and produce noisy, misleading evidence.
 
 ## Phase 2 — Explain (always)
 
@@ -66,13 +77,21 @@ For each root cause candidate (max 2):
 ix read <candidate-function> --format json
 ```
 
-Read the specific function only. Look for:
+Use `ix read <candidate-function>` — **never a native read of the whole file**.
+
+**If `ix read <symbol>` returns ambiguous or unresolved:**
+1. Try the resolved file path from `ix locate`: `ix read <path-from-locate> --format json`
+2. If that also fails — STOP. Do not fall back to a whole-file native read. Reduce confidence, note which symbol could not be confirmed, and surface the ambiguity in the output.
+
+**Whole-file read ceiling:** At most one whole-file read is permitted per run, and only when absolutely no symbol-level path succeeded. Once a whole-file read has occurred, do NOT issue additional whole-file reads for downstream collaborators or related files. Synthesize from available graph + source evidence and reduce confidence instead.
+
+Look for:
 - Edge cases in input handling
 - Assumptions about state that might be violated
 - Missing null/error checks
 - Incorrect sequencing
 
-Hard limit: 2 `ix read` calls maximum. If still ambiguous, surface the candidates and uncertainty to the user.
+Hard limit: 2 source reads maximum (symbol-level or path-level). Whole-file reads count against this limit. If still ambiguous after the limit, surface the candidates and uncertainty to the user.
 
 ## Output
 
@@ -90,7 +109,7 @@ Hard limit: 2 `ix read` calls maximum. If still ambiguous, surface the candidate
 - [what graph data supports each candidate]
 - [what code read revealed, if any]
 
-**Confidence:** [high / medium / low] — [why]
+**Confidence:** [high / medium / low] — [why; if graph was stale or any read was whole-file, explain the penalty]
 
 **Next steps:**
 - Add logging at [specific point] to confirm

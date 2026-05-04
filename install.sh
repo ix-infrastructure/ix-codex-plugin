@@ -9,17 +9,25 @@ print_help() {
 ix-codex-plugin installer wrapper
 
 Usage:
-  ./install.sh --repo /path/to/project [--plugin] [--hooks] [--mode copy|symlink] [--force]
-  ./install.sh --home [--plugin] [--hooks] [--mode copy|symlink] [--force]
+  ./install.sh --repo /path/to/project [--plugin] [--hooks] [--mcp] [--mode copy|symlink] [--force]
+  ./install.sh --home [--plugin] [--hooks] [--mcp] [--mode copy|symlink] [--force]
 
 Examples:
   ./install.sh --repo /path/to/project --plugin
   ./install.sh --repo /path/to/project --plugin --hooks
   ./install.sh --repo /path/to/project --plugin --hooks --mode symlink
   ./install.sh --home --plugin --hooks
+  ./install.sh --home --hooks --mcp
+
+Flags:
+  --plugin   Copy/register the ix-memory Codex plugin in a local marketplace
+  --hooks    Install the .codex hook bundle (session, prompt, pre/post tool, stop)
+  --mcp      Install the ix-memory MCP server and print the codex mcp add command
 
 Notes:
-  - If neither --plugin nor --hooks is passed, the installer defaults to --plugin.
+  - If none of --plugin, --hooks, or --mcp is passed, the installer defaults to --plugin.
+  - --plugin does not activate the plugin in Codex. Restart Codex, then install or enable
+    'ix-memory' from the marketplace before its skills appear.
   - This wrapper forwards all arguments to scripts/install_codex_integration.py.
 EOF
 }

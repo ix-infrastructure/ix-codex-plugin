@@ -34,6 +34,18 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh -lc 'd=\"$PWD\"; while [ \"$d\" != \"/\" ]; do if [ -f \"$d/.codex/hooks/post_tool_use.py\" ]; then exec python3 \"$d/.codex/hooks/post_tool_use.py\"; fi; d=$(dirname \"$d\"); done; if [ -f \"$HOME/.codex/hooks/post_tool_use.py\" ]; then exec python3 \"$HOME/.codex/hooks/post_tool_use.py\"; fi; exit 0'",
+            "statusMessage": "Updating Ix graph"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

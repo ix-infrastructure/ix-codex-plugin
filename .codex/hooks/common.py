@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
 import json
 import os
 import re
@@ -9,6 +10,8 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.request
+import uuid
 from pathlib import Path
 
 
@@ -16,11 +19,35 @@ CACHE_DIR = Path(os.environ.get("TMPDIR", "/tmp")) / "ix-codex-hooks"
 STATUS_CACHE_PATH = CACHE_DIR / "ix-status.json"
 BRIEFING_CACHE_PATH = CACHE_DIR / "ix-briefing.txt"
 PRO_CACHE_PATH = CACHE_DIR / "ix-pro.json"
+RUNTIME_HEALTH_CACHE_PATH = CACHE_DIR / "ix-runtime-health.json"
 
 HEALTH_TTL_SECONDS = 30
 BRIEFING_TTL_SECONDS = 600
+RUNTIME_HEALTH_TTL_SECONDS = 30
 
 SHELL_OPERATORS = ("|", "&&", "||", ";", "$(", "`")
+
+# Detects common secret shapes: API keys, PATs, PEM headers, credential kv pairs
+SECRET_RE = re.compile(
+    r"(?:"
+    r"(?:sk|pk|rk|ak|sk_live|sk_test)-[A-Za-z0-9]{16,}"
+    r"|ghp_[A-Za-z0-9]{36,}"
+    r"|ghs_[A-Za-z0-9]{36,}"
+    r"|github_pat_[A-Za-z0-9_]{82,}"
+    r"|xox[bpra]-[A-Za-z0-9\-]{16,}"
+    r"|AKIA[A-Z0-9]{16}"
+    r"|-----BEGIN [A-Z ]{0,20}PRIVATE KEY"
+    r"|(?:password|passwd|secret|token|apikey|api_key)\s*[:=]\s*\S{8,}"
+    r")"
+)
+
+# Output redirect: > or >> not preceded by 2 (stderr), < (heredoc), or > (already matched)
+WRITE_REDIRECT_RE = re.compile(r"(?<![2<>])>>?\s+([^\s|;&<>]+)")
+EDITOR_COMMANDS = frozenset({"vim", "vi", "nvim", "nano", "emacs", "hx", "micro"})
+WRITE_SKIP_SUFFIXES = (
+    ".bin", ".exe", ".gif", ".gz", ".ico", ".jpeg", ".jpg",
+    ".pdf", ".png", ".tar", ".zip", ".lock", ".sum",
+)
 SEARCH_COMMANDS = {"grep", "rg"}
 READ_COMMANDS = {"cat", "head", "tail", "sed", "awk"}
 REGEX_META_RE = re.compile(r"[\\^$\[\](){}|*+?]")
@@ -67,8 +94,20 @@ READ_SKIP_BASENAMES = {
     "go.sum",
     "package-lock.json",
     "pnpm-lock.yaml",
+    "skill.md",
     "yarn.lock",
 }
+
+
+def load_plugin_version() -> dict | None:
+    """Load the version metadata written by the installer into .codex/ix-plugin-version.json."""
+    version_file = Path(__file__).parent.parent / "ix-plugin-version.json"
+    if not version_file.exists():
+        return None
+    try:
+        return json.loads(version_file.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
 
 
 def read_event() -> dict:
@@ -463,6 +502,17 @@ def build_search_message(pattern: str, cwd: str | Path | None) -> str | None:
     if len(pattern) < 3:
         return None
 
+    # Plain patterns only — intent classifier (skip regex-like or secret-shaped patterns)
+    if looks_plain_pattern(pattern):
+        response = call_runtime(
+            "/v2/ix_query",
+            {"mode": "locate", "query": {"targets": [pattern]}},
+            workspace_root=cwd,
+        )
+        if response is not None:
+            return summarize_ix_query_locate(response, pattern)
+
+    # Fall back to CLI
     calls = [("text", ["ix", "text", pattern, "--limit", "15", "--format", "json"], 10)]
     if looks_plain_pattern(pattern):
         calls.append(("locate", ["ix", "locate", pattern, "--limit", "5", "--format", "json"], 10))
@@ -490,11 +540,20 @@ def build_read_message(file_path: str, cwd: str | Path | None) -> str | None:
     if not filename:
         return None
 
+    # Use a relative path for ix queries when possible so ix resolves the right
+    # file instead of an arbitrary same-named file elsewhere in the repo.
+    ix_query_target = filename
+    if cwd and os.path.isabs(file_path):
+        try:
+            ix_query_target = str(Path(file_path).relative_to(Path(cwd).resolve()))
+        except ValueError:
+            pass
+
     results = run_parallel_json(
         [
             ("inventory", ["ix", "inventory", "--kind", "file", "--path", filename, "--format", "json"], 10),
-            ("overview", ["ix", "overview", filename, "--format", "json"], 10),
-            ("impact", ["ix", "impact", filename, "--format", "json"], 10),
+            ("overview", ["ix", "overview", ix_query_target, "--format", "json"], 10),
+            ("impact", ["ix", "impact", ix_query_target, "--format", "json"], 10),
         ],
         cwd,
     )
@@ -513,6 +572,96 @@ def build_read_message(file_path: str, cwd: str | Path | None) -> str | None:
     return " | ".join(pieces[:1] + pieces[1:])
 
 
+def detect_file_write(command: str) -> list[str]:
+    """Return file paths that will be written by this Bash command."""
+    if not command:
+        return []
+
+    paths: list[str] = []
+
+    for match in WRITE_REDIRECT_RE.finditer(command):
+        path = match.group(1).strip("'\"")
+        if (
+            path
+            and not path.startswith(("/dev/", "&", "-"))
+            and not path.lower().endswith(WRITE_SKIP_SUFFIXES)
+        ):
+            paths.append(path)
+
+    first_line = command.split("\n")[0]
+    try:
+        tokens = shlex.split(first_line)
+    except ValueError:
+        tokens = []
+
+    if tokens:
+        cmd = Path(tokens[0]).name
+        if cmd == "tee":
+            for tok in tokens[1:]:
+                if not tok.startswith("-") and not tok.lower().endswith(WRITE_SKIP_SUFFIXES):
+                    paths.append(tok)
+        elif cmd in EDITOR_COMMANDS:
+            for tok in tokens[1:]:
+                if not tok.startswith("-") and not tok.lower().endswith(WRITE_SKIP_SUFFIXES):
+                    paths.append(tok)
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for p in paths:
+        if p not in seen:
+            seen.add(p)
+            result.append(p)
+    return result
+
+
+def build_write_warning(file_path: str, cwd: str | Path | None) -> str | None:
+    """Run ix impact on a file before a write and return a warning, or None if safe."""
+    filename = Path(file_path).name
+    if not filename:
+        return None
+
+    impact = run_ix_json(["ix", "impact", file_path, "--format", "json"], cwd=cwd, timeout=10)
+    if not isinstance(impact, dict):
+        return None
+
+    risk_level = str(impact.get("riskLevel") or "unknown").lower()
+    if risk_level in {"unknown", "low"}:
+        return None
+
+    summary = impact.get("summary", {})
+    direct_deps = int(summary.get("directDependents", 0) or 0) if isinstance(summary, dict) else 0
+    member_callers = int(summary.get("memberLevelCallers", 0) or 0) if isinstance(summary, dict) else 0
+    effective_deps = max(direct_deps, member_callers)
+
+    if effective_deps < 3:
+        return None
+
+    prefix = {
+        "critical": "[ix] ⚠ CRITICAL EDIT",
+        "high": "[ix] ⚠ HIGH-RISK EDIT",
+        "medium": "[ix] NOTE",
+    }.get(risk_level)
+
+    if not prefix:
+        return None
+
+    return (
+        f"{prefix} — {filename} has {effective_deps} dependents"
+        f" | Run: ix impact '{file_path}' for full blast radius"
+    )
+
+
+def spawn_background_ix_ingest(file_path: str | Path, cwd: str | Path | None) -> None:
+    """Fire-and-forget ix map on a single file path."""
+    subprocess.Popen(
+        ["ix", "map", str(file_path)],
+        cwd=str(cwd) if cwd else None,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
 def spawn_background_ix_map(cwd: str | Path | None) -> None:
     subprocess.Popen(
         ["ix", "map"],
@@ -521,3 +670,179 @@ def spawn_background_ix_map(cwd: str | Path | None) -> None:
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+
+
+# ── Runtime HTTP client ───────────────────────────────────────────────────────
+
+RUNTIME_URL = os.environ.get("IX_RUNTIME_URL", "http://localhost:8090")
+_SURFACE = "codex-plugin"
+_SURFACE_VERSION = "2.0.0"
+
+
+def git_revision(cwd: str | Path | None = None) -> str | None:
+    result = run_command(["git", "rev-parse", "HEAD"], cwd=cwd, timeout=5)
+    if result and result.returncode == 0:
+        rev = result.stdout.strip()
+        return rev if rev else None
+    return None
+
+
+def _workspace_id(root: Path) -> str:
+    return hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:16]
+
+
+def _scrub_secrets(payload: dict) -> dict:
+    """Return a copy of payload with secret-shaped string values replaced with [REDACTED]."""
+    result: dict = {}
+    for key, value in payload.items():
+        if isinstance(value, str) and SECRET_RE.search(value):
+            result[key] = "[REDACTED]"
+        elif isinstance(value, dict):
+            result[key] = _scrub_secrets(value)
+        elif isinstance(value, list):
+            scrubbed: list = []
+            for item in value:
+                if isinstance(item, dict):
+                    scrubbed.append(_scrub_secrets(item))
+                elif isinstance(item, str) and SECRET_RE.search(item):
+                    scrubbed.append("[REDACTED]")
+                else:
+                    scrubbed.append(item)
+            result[key] = scrubbed
+        else:
+            result[key] = value
+    return result
+
+
+def runtime_healthy() -> bool:
+    """Return True if the Ix Core Runtime responded to GET /v2/status within 2 s."""
+    if RUNTIME_HEALTH_CACHE_PATH.exists():
+        try:
+            cached = json.loads(RUNTIME_HEALTH_CACHE_PATH.read_text())
+        except json.JSONDecodeError:
+            cached = None
+        if isinstance(cached, dict):
+            if time.time() - float(cached.get("timestamp", 0)) < RUNTIME_HEALTH_TTL_SECONDS:
+                return bool(cached.get("ok", False))
+
+    ok = get_runtime("/v2/status", timeout=2) is not None
+    _write_cache(RUNTIME_HEALTH_CACHE_PATH, {"timestamp": time.time(), "ok": ok})
+    return ok
+
+
+def call_runtime(
+    endpoint: str,
+    payload: dict,
+    timeout: int = 9,
+    workspace_root: str | Path | None = None,
+) -> dict | list | None:
+    """POST to the Ix Core Runtime. Returns parsed JSON or None on any failure."""
+    if not runtime_healthy():
+        return None
+    try:
+        root = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
+        body = {
+            "api_version": "v2",
+            "workspace_id": _workspace_id(root),
+            "caller": {"surface": _SURFACE, "surface_version": _SURFACE_VERSION},
+            "request_id": str(uuid.uuid4()),
+            **_scrub_secrets(payload),
+        }
+        data = json.dumps(body).encode()
+        url = RUNTIME_URL.rstrip("/") + endpoint
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status < 200 or resp.status >= 300:
+                return None
+            return json.loads(resp.read().decode())
+    except Exception:
+        return None
+
+
+def get_runtime(endpoint: str, timeout: int = 2) -> dict | list | None:
+    """GET from the Ix Core Runtime. Returns parsed JSON or None on any failure."""
+    try:
+        url = RUNTIME_URL.rstrip("/") + endpoint
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status < 200 or resp.status >= 300:
+                return None
+            return json.loads(resp.read().decode())
+    except Exception:
+        return None
+
+
+def summarize_ix_query_locate(response: dict | list | None, pattern: str) -> str | None:
+    """Format a /v2/ix_query locate-mode response as search interception context."""
+    if not isinstance(response, dict):
+        return None
+
+    entities = response.get("entities", [])
+    text_hits = response.get("text_hits", [])
+
+    entity_labels: list[str] = []
+    for e in (entities or [])[:3]:
+        if not isinstance(e, dict) or not e.get("name"):
+            continue
+        label = str(e["name"])
+        kind = str(e.get("kind") or "")
+        if kind:
+            label += f" ({kind})"
+        entity_labels.append(label)
+
+    text_count = len(text_hits) if isinstance(text_hits, list) else 0
+    text_files: list[str] = []
+    for hit in (text_hits or [])[:4]:
+        if isinstance(hit, dict) and hit.get("path"):
+            name = Path(str(hit["path"])).name
+            if name and name not in text_files:
+                text_files.append(name)
+
+    if not entity_labels and not text_count:
+        return None
+
+    pieces = [f"[ix] bash grep intercepted for '{pattern}'"]
+    if entity_labels:
+        pieces.append("candidates: " + ", ".join(entity_labels))
+    if text_count:
+        text_summary = f"{text_count} text hits"
+        if text_files:
+            extra = max(0, text_count - 4)
+            text_summary += " in " + ", ".join(text_files)
+            if extra:
+                text_summary += f" (+{extra} more)"
+        pieces.append(text_summary)
+    pieces.append(f"Prefer: ix text '{pattern}' or ix locate '{pattern}' over shell grep")
+    return " | ".join(pieces[:1] + pieces[1:])
+
+
+def format_status_briefing(response: dict | list | None) -> str | None:
+    """Format a /v2/ix_query status-mode response as briefing text."""
+    if not isinstance(response, dict):
+        return None
+
+    briefing = response.get("briefing") or response.get("content") or response.get("text")
+    if isinstance(briefing, str) and briefing.strip():
+        return briefing.strip()
+
+    parts: list[str] = []
+    status = response.get("status") or response.get("health")
+    if status:
+        parts.append(f"Status: {status}")
+    goals = response.get("goals", [])
+    if isinstance(goals, list) and goals:
+        names = [str(g.get("name") or g) for g in goals[:3] if g]
+        if names:
+            parts.append("Goals: " + ", ".join(names))
+    decisions = response.get("decisions", [])
+    if isinstance(decisions, list) and decisions:
+        names = [str(d.get("name") or d) for d in decisions[:3] if d]
+        if names:
+            parts.append("Recent decisions: " + ", ".join(names))
+
+    return "\n".join(parts) if parts else None

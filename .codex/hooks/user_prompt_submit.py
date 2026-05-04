@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from common import (
     briefing_due,
+    call_runtime,
     emit_json,
     find_workspace_root,
+    format_status_briefing,
     ix_healthy,
     ix_pro_available,
     mark_briefing_sent,
@@ -21,7 +23,18 @@ def main() -> None:
     if not briefing_due():
         return
 
-    briefing = run_ix_text(["ix", "briefing", "--format", "json"], cwd=workspace_root, timeout=8)
+    # Try runtime API first
+    response = call_runtime(
+        "/v2/ix_query", {"mode": "status"}, workspace_root=workspace_root
+    )
+    briefing = format_status_briefing(response)
+
+    if briefing is None:
+        # Fall back to ix briefing CLI
+        briefing = run_ix_text(
+            ["ix", "briefing", "--format", "json"], cwd=workspace_root, timeout=8
+        )
+
     if not briefing:
         return
 

@@ -74,12 +74,20 @@ Unsupported Claude-only hook points today:
 ### Quick install
 
 ```bash
-git clone git@github.com:your-org/ix-codex-plugin.git
-cd ix-codex-plugin
-./install.sh --home --plugin --hooks
+curl -fsSL https://ix-infra.com/codex-install.sh | sh
 ```
 
 Then restart Codex and install or enable `ix-memory` from the `ix-codex-plugin` marketplace.
+Running the installer only copies/registers the plugin; the skills do not appear until the plugin is enabled in Codex.
+
+PowerShell:
+
+```powershell
+irm https://ix-infra.com/codex-install.ps1 | iex
+```
+
+The hosted installers cache the source checkout in `~/.ix/codex-plugin-source` and default to
+`--home --plugin --hooks`.
 
 If you only want the plugin and not the hooks:
 
@@ -93,12 +101,13 @@ If you only want a repo-local install:
 ./install.sh --repo /path/to/project --plugin --hooks
 ```
 
-PowerShell:
+If you want a fully local checkout for development or advanced flags, clone the repo and use the
+local wrappers:
 
-```powershell
-git clone git@github.com:your-org/ix-codex-plugin.git
+```bash
+git clone https://github.com/ix-infrastructure/ix-codex-plugin.git
 cd ix-codex-plugin
-.\install.ps1 --home --plugin --hooks
+./install.sh --home --plugin --hooks
 ```
 
 ### What gets installed
@@ -107,6 +116,8 @@ Plugin:
 - `plugins/ix-memory/.codex-plugin/plugin.json`
 - `plugins/ix-memory/skills/*`
 - `.agents/plugins/marketplace.json`
+
+The plugin install step registers a marketplace entry. It does not auto-enable `ix-memory`; restart Codex and enable the plugin before expecting its skills to show up.
 
 Hooks:
 - `.codex/config.toml`
@@ -187,6 +198,44 @@ Copy these into either the repo or `~/.codex`:
 - `.codex/hooks/user_prompt_submit.py`
 - `.codex/hooks/pre_tool_use.py`
 - `.codex/hooks/stop.py`
+
+## Verify active plugin version
+
+Each `--hooks` install writes a small metadata file at `.codex/ix-plugin-version.json` in the
+target directory. This lets you confirm exactly which build of the plugin is active.
+
+```bash
+cat .codex/ix-plugin-version.json
+```
+
+Example output:
+
+```json
+{
+  "plugin_name": "ix-memory",
+  "plugin_version": "2.3.0",
+  "source_path": "/home/you/ix-codex-plugin",
+  "installed_at": "2026-04-29T18:00:00+00:00",
+  "git_commit": "a1b2c3d4e5f6..."
+}
+```
+
+At the start of every Codex session the `SessionStart` hook reads this file and emits a
+one-line header into the session context:
+
+```
+ix-memory plugin v2.3.0 active | installed 2026-04-29 | commit a1b2c3d
+```
+
+**To confirm a reinstall took effect:**
+
+1. Reinstall: `./install.sh --repo /path/to/project --hooks --force`
+2. Check the new timestamp: `cat /path/to/project/.codex/ix-plugin-version.json`
+3. Start a new Codex session — the version line in the session context will reflect the new
+   install date and commit.
+
+If the version line is missing, the hooks were installed manually without using the installer.
+Run `./install.sh --repo /path/to/project --hooks --force` to write the file.
 
 ## Repo Guidance
 

@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 
@@ -34,12 +36,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--plugin",
         action="store_true",
-        help="Install the ix-memory plugin into a marketplace-backed location",
+        help="Copy/register the ix-memory plugin into a marketplace-backed location",
     )
     parser.add_argument(
         "--hooks",
         action="store_true",
         help="Install the repo/home .codex hook bundle",
+    )
+    parser.add_argument(
+        "--mcp",
+        action="store_true",
+        help="Install the ix-memory MCP server and print the codex mcp add registration command",
     )
     parser.add_argument(
         "--mode",
@@ -63,7 +70,7 @@ def parse_args() -> argparse.Namespace:
         help="Marketplace display name to create if the target has no marketplace yet",
     )
     args = parser.parse_args()
-    if not args.plugin and not args.hooks:
+    if not args.plugin and not args.hooks and not args.mcp:
         args.plugin = True
     return args
 
@@ -147,12 +154,24 @@ def write_json(path: Path, payload: dict) -> None:
         handle.write("\n")
 
 
+def _read_plugin_json() -> dict:
+    plugin_json = source_plugin_dir() / ".codex-plugin" / "plugin.json"
+    try:
+        with plugin_json.open() as fh:
+            meta = json.load(fh)
+        return meta if isinstance(meta, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 def update_marketplace(
     marketplace_path: Path,
     plugin_path: str,
     marketplace_name: str,
     marketplace_display_name: str,
     force: bool,
+    version: str = "",
+    description: str = "",
 ) -> None:
     if marketplace_path.exists():
         payload = load_json(marketplace_path)
@@ -173,7 +192,7 @@ def update_marketplace(
     if not isinstance(plugins, list):
         raise ValueError(f"{marketplace_path} field 'plugins' must be an array.")
 
-    new_entry = {
+    new_entry: dict = {
         "name": PLUGIN_NAME,
         "source": {
             "source": "local",
@@ -181,6 +200,10 @@ def update_marketplace(
         },
         **PLUGIN_ENTRY,
     }
+    if version:
+        new_entry["version"] = version
+    if description:
+        new_entry["description"] = description
 
     for index, entry in enumerate(plugins):
         if isinstance(entry, dict) and entry.get("name") == PLUGIN_NAME:
@@ -229,6 +252,48 @@ def ensure_codex_hooks_enabled(config_path: Path) -> None:
     config_path.write_text("\n".join(lines) + "\n")
 
 
+def _source_git_commit() -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(repo_root()),
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode == 0:
+            rev = result.stdout.strip()
+            return rev if rev else None
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def write_version_file(target_root: Path) -> Path:
+    """Write .codex/ix-plugin-version.json into the install target."""
+    meta = _read_plugin_json()
+    plugin_version = meta.get("version", "unknown")
+    plugin_name = meta.get("name", PLUGIN_NAME)
+
+    payload: dict = {
+        "plugin_name": plugin_name,
+        "plugin_version": plugin_version,
+        "source_path": str(repo_root()),
+        "installed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+    }
+    commit = _source_git_commit()
+    if commit:
+        payload["git_commit"] = commit
+
+    version_path = target_root / ".codex" / "ix-plugin-version.json"
+    version_path.parent.mkdir(parents=True, exist_ok=True)
+    with version_path.open("w") as fh:
+        json.dump(payload, fh, indent=2)
+        fh.write("\n")
+    return version_path
+
+
 def install_hooks(target_root: Path, mode: str, force: bool) -> list[Path]:
     installed: list[Path] = []
     codex_dir = target_root / ".codex"
@@ -246,6 +311,8 @@ def install_hooks(target_root: Path, mode: str, force: bool) -> list[Path]:
         destination = hooks_destination / source.name
         install_file(source, destination, mode, force)
         installed.append(destination)
+
+    installed.append(write_version_file(target_root))
 
     return installed
 
@@ -270,6 +337,10 @@ def install_plugin(
     install_tree(source_plugin_dir(), plugin_destination, mode, force)
     installed.append(plugin_destination)
 
+    plugin_meta = _read_plugin_json()
+    plugin_version = str(plugin_meta.get("version", ""))
+    plugin_description = str(plugin_meta.get("description", ""))
+
     marketplace_path = target_root / ".agents" / "plugins" / "marketplace.json"
     update_marketplace(
         marketplace_path,
@@ -277,9 +348,22 @@ def install_plugin(
         marketplace_name,
         marketplace_display_name,
         force,
+        version=plugin_version,
+        description=plugin_description,
     )
     installed.append(marketplace_path)
 
+    return installed
+
+
+def install_mcp(target_root: Path, mode: str, force: bool) -> list[Path]:
+    installed: list[Path] = []
+    mcp_source = repo_root() / "mcp" / "server.py"
+    mcp_dest_dir = target_root / ".codex" / "mcp"
+    mcp_dest = mcp_dest_dir / "server.py"
+    mcp_dest_dir.mkdir(parents=True, exist_ok=True)
+    install_file(mcp_source, mcp_dest, mode, force)
+    installed.append(mcp_dest)
     return installed
 
 
@@ -302,15 +386,23 @@ def main() -> None:
         )
     if args.hooks:
         installed.extend(install_hooks(target_root, args.mode, args.force))
+    if args.mcp:
+        installed.extend(install_mcp(target_root, args.mode, args.force))
 
     print(f"Installed into: {target_root}")
     for path in installed:
         print(path)
 
     if args.plugin:
-        print("Restart Codex, then install or enable the 'ix-memory' plugin from the marketplace.")
+        print("Plugin files and marketplace entry were installed.")
+        print("The plugin is not active yet, so its skills will not appear immediately.")
+        print("Restart Codex, then install or enable 'ix-memory' from the marketplace.")
     if args.hooks:
         print("Restart Codex so it reloads .codex/config.toml and hooks.json.")
+    if args.mcp:
+        mcp_path = target_root / ".codex" / "mcp" / "server.py"
+        print(f"Register the MCP server with Codex:")
+        print(f"  codex mcp add ix-memory -- python3 {mcp_path}")
 
 
 if __name__ == "__main__":

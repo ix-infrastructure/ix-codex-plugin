@@ -18,11 +18,20 @@ ix subsystems --format json
 ix subsystems --list --format json
 ```
 
-If `$ARGUMENTS` is provided, also run:
+The `--list` output is the **canonical region ID enumeration**. All subsequent scoped `ix subsystems` calls must use only IDs (or name tokens) that appeared in this list. Never pass a raw region ID that was not returned by `--list`.
+
+If `$ARGUMENTS` is provided, resolve it against the `--list` output first:
+- If the argument matches a region name or ID from `--list`, proceed with that ID.
+- If ambiguous (multiple matches), use the most specific match or filter by path prefix.
+- If no match is found in `--list`, do NOT call `ix subsystems <argument>` directly — instead filter the repo-wide `--format json` results by path prefix or name string.
+
+After resolving the target region, run:
 ```bash
-ix subsystems $ARGUMENTS --explain
-ix subsystems $ARGUMENTS --format json
+ix subsystems <resolved-id> --explain
+ix subsystems <resolved-id> --format json
 ```
+
+**Unknown-target recovery:** If a scoped `ix subsystems` call returns `unknown_target` or an ambiguous result, immediately fall back to filtering the full `ix subsystems --list` output. Do not retry with variant spellings or raw numeric IDs not in the enumeration.
 
 Extract:
 - Region hierarchy (systems -> subsystems -> modules)
@@ -37,10 +46,7 @@ Extract:
 ix smells --format json
 ```
 
-If `$ARGUMENTS` scopes to a path:
-```bash
-ix smells --path $ARGUMENTS --format json
-```
+If `$ARGUMENTS` scopes to a path or subsystem, do not rerun `ix smells` with a scope flag. Filter the repo-wide results by path prefix after retrieval.
 
 Classify each finding: `orphan` / `god-module` / `weak-component`.
 

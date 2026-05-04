@@ -19,10 +19,11 @@ ix rank --by dependents --kind class --top 10 --exclude-path test --format json
 ix rank --by callers   --kind function --top 10 --exclude-path test --format json
 ```
 
-If `$ARGUMENTS` is non-empty, also run:
+If `$ARGUMENTS` is a named symbol or subsystem (not empty, not `.`, and not a filesystem path), also run:
 ```bash
-ix locate "$ARGUMENTS" --limit 5 --format json
+ix locate "$ARGUMENTS" --format json
 ```
+Note: `ix locate` resolves symbol names only — skip it entirely when the target is `.` or an empty string (whole-repo); the subsystem + rank results above are sufficient.
 
 Extract from subsystems: region names, file counts, cohesion scores.
 Extract from rank: the 3-5 most structurally central classes and functions.

@@ -55,7 +55,7 @@ Correlate components that are both highly central and in poorly-bounded subsyste
 If Step 1-3 identify one region as clearly the worst:
 ```bash
 ix subsystems <region> --explain
-ix smells --path <region-path> --format json
+ix smells --format json
 ```
 
 Hard limit: One region.

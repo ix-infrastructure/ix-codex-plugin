@@ -13,7 +13,7 @@ Answer: what is this, how does it connect, and what's the execution path? Stop a
 ## Phase 1 — Locate (always)
 
 ```bash
-ix locate $ARGUMENTS --limit 5 --format json
+ix locate $ARGUMENTS --format json
 ```
 
 If multiple matches: use `--kind`, `--path`, or `--pick N` to resolve. Do not proceed until the entity is unambiguous.
@@ -68,7 +68,13 @@ Only if the above steps leave a specific implementation question unanswered:
 ix read <symbol> --format json
 ```
 
-Read the symbol only — never the full file. If the symbol is a class, read the specific method suspected.
+Use `ix read <symbol>` — **never a native file read**. Ix is the memory layer; native reads bypass it and load unnecessary context. If the symbol is a class, read the specific method suspected, not the class.
+
+**Disambiguation chain for ambiguous-file responses:**
+1. If `ix read <class>` returns `ambiguous-file`, look up the resolved file path from the prior `ix locate` result and call `ix read <path>` at the symbol level instead.
+2. If that also returns nothing or is ambiguous, do NOT fall back to a native whole-file read. Instead, note which members remain unresolved and reduce evidence quality to `uncertain` in the Output.
+
+If `ix read` returns nothing and no path was resolved by `ix locate`, only then fall back to a native read scoped to the exact line range, not the whole file.
 
 Hard limit: One `ix read` call maximum. If still unclear after reading, surface the ambiguity to the user rather than reading more.
 
