@@ -18,11 +18,11 @@ Work through targets methodically. Build the plan incrementally — do not outpu
 
 Parse the input as a list of targets (files or symbols). If the input is a description, first resolve:
 ```bash
-ix locate "$INPUT" --limit 5 --format json
+ix locate "$INPUT" --format json
 ix text   "$INPUT" --limit 10 --format json
 ```
 
-Identify 2-5 concrete symbols or files. If the target set is unclear, ask for clarification before proceeding.
+Identify 2-5 concrete symbols or files. If the target set is ambiguous, take the 2-3 best-matching candidates by name or path and proceed — do not stop to ask.
 
 If the targets span unfamiliar or multiple subsystems, gather lightweight `ix-docs` context before impact analysis:
 ```bash
@@ -80,6 +80,18 @@ ix read <unclear-target> --format json
 
 Use only to understand what a target does if ix explain was insufficient.
 
+### Step 7 — Pro context (if ix pro available)
+
+Before finalizing the plan, check for existing decisions or plans that constrain this refactor:
+```bash
+ix decisions --format json
+ix plans --format json
+```
+
+- Surface any decisions that apply to the targets — these may restrict how or whether certain changes are safe
+- If a plan already exists for this change set, align the output to it rather than duplicating
+- Skip this step if ix pro commands are not enabled
+
 ## Plan construction rules
 
 - Order: most-depended-on first, or lowest-risk first if targets are independent
@@ -131,4 +143,8 @@ Symbols affected by changes to multiple targets:
 ## Safe Edit Boundaries
 
 [Which parts of the change are self-contained and which affect shared infrastructure]
+
+## Related Decisions
+
+[Any architectural decisions from ix decisions that constrain this refactor — omit section if none found or pro unavailable]
 ```

@@ -16,7 +16,7 @@ If `$ARGUMENTS` contains symbol names, proceed.
 If `$ARGUMENTS` is a description (no identifiable symbols), first run:
 ```bash
 ix text "$ARGUMENTS" --limit 10 --format json
-ix locate "$ARGUMENTS" --limit 5 --format json
+ix locate "$ARGUMENTS" --format json
 ```
 Identify the 1-4 most relevant symbols and treat those as targets.
 
@@ -30,7 +30,11 @@ ix callers <target> --limit 10 --format json
 
 Rank targets by risk level: critical > high > medium > low.
 
-## Phase 3 — Data flow (only if 2+ targets)
+**Text-fallback confidence rule:** If `ix callers` or `ix depends` for any target returns a text fallback (i.e. results are not graph-backed — no symbol IDs, only prose or filename strings), that target's impact assessment must be marked **lower confidence** in the Output with the reason explicitly stated (e.g. "ix callers fell back to text — graph coverage partial for this target").
+
+**Fast path — all low risk:** If every target is `low` risk AND has < 3 dependents, skip Phases 3 and 4. Go directly to Output with verdict "SAFE — all targets low risk; no data-flow or shared-dependent analysis needed."
+
+## Phase 3 — Data flow (only if 2+ targets AND at least one is medium/high/critical)
 
 Find how the targets connect:
 ```bash
@@ -39,7 +43,7 @@ ix trace <highest-risk-target> --to <second-target> --format json
 
 Run for the most architecturally significant pair. Skip if targets are in independent subsystems.
 
-## Phase 4 — Shared dependents (only if high/critical targets exist)
+## Phase 4 — Shared dependents (only if high/critical targets exist; skip if all low risk)
 
 ```bash
 ix depends <highest-risk-target> --depth 2 --format json
@@ -47,13 +51,17 @@ ix depends <highest-risk-target> --depth 2 --format json
 
 Identify if any third symbol depends on multiple targets (shared blast radius — highest testing priority).
 
+**Shared-blast-radius qualification rule:** Any claim that "no shared downstream symbol was found across these targets" (or equivalent) must explicitly state which target pairs were actually checked with `ix depends` and which were not. If `ix depends` was run for only one target, the claim is only valid for that target's dependents. Never generalize across all targets unless every pair was verified.
+
 ## Phase 5 — Ix Pro plan (if ix pro available)
 
-If `ix briefing` returns plans/tasks, check for existing relevant plans:
+If `ix briefing` or session context indicates active plans exist, you **must** run:
 ```bash
 ix plans --format json
 ```
-Skip this phase if ix pro is unavailable.
+Use the output to qualify change ordering — existing plans may already cover some targets or establish priority constraints. If active plans are present and this step is skipped, the plan output is incomplete.
+
+Skip this phase only if ix pro is confirmed unavailable.
 
 ## Output
 

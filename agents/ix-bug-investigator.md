@@ -19,7 +19,7 @@ Each iteration: gather evidence -> form hypothesis -> decide if you need more da
 Before tracing, build a lightweight `ix-docs`-style context:
 ```bash
 ix subsystems --format json
-ix locate "$SYMPTOM" --limit 5 --format json
+ix locate "$SYMPTOM" --format json
 ```
 
 If the likely subsystem or boundary component is still unclear, add:
@@ -35,7 +35,7 @@ Use this only to answer:
 ### Step 1 — Locate the entry point
 
 ```bash
-ix locate "$SYMPTOM" --limit 5 --format json
+ix locate "$SYMPTOM" --format json
 ix text   "$SYMPTOM" --limit 10 --format json
 ```
 

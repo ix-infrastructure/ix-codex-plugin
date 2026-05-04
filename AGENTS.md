@@ -34,6 +34,9 @@ This means Codex is not a command wrapper. Codex uses Ix as memory to reason, th
 - Output raw JSON
 - Run `ix map` for exploration
 - Run `ix rank` without both `--by` and `--kind`
+- Run `ix inventory` without `--kind` — `--kind` is required (e.g. `ix inventory --kind file --path <dir> --format json`)
+- Add `--path` to `ix callers` or `ix callees` — these subcommands do not accept `--path`
+- Add `--limit` to `ix locate` — this subcommand does not accept `--limit`
 
 ---
 
@@ -52,6 +55,43 @@ When answering a question about a codebase:
 ```
 
 Skip steps if earlier steps answer the question. Most questions should stop by step 3.
+
+---
+
+## ix read vs Native File Reads
+
+**Decision rule:** Ix is the primary memory layer. Use `ix read <symbol>` whenever the question is about a symbol's behavior, logic, or implementation. Native file reads are a fallback for file-structural tasks only.
+
+| Situation | Preferred | Reason |
+|---|---|---|
+| What does a function do? | `ix read <symbol>` | Symbol-level — no need to load the file |
+| What does a class method do? | `ix contains <class>` → `ix read <method>` | Symbol-level — targeted |
+| Trace a bug to a candidate function | `ix read <candidate-function>` | Symbol-level — only the suspect |
+| Place an edit (final file-local context) | Native read | File-structural — need surrounding lines |
+| Read file header, imports, exports layout | Native read | File-structural — no symbol equivalent |
+| Symbol cannot be resolved by ix | Native read (fallback) | ix unavailable or unindexed |
+| User explicitly asks to see the whole file | Native read | Explicit request |
+
+**Native reads are NOT allowed for:**
+- Answering "what does X do" (use `ix read X`)
+- Pre-edit risk analysis (use `ix impact`)
+- Debugging a function (use `ix trace` + `ix read <candidate>`)
+- Understanding class members (use `ix contains` then `ix read` per method)
+- Any task where a symbol-level read can answer the question
+
+**Good — symbol-level read:**
+```
+Task: "What does AuthMiddleware.validate do?"
+✓  ix read AuthMiddleware.validate --format json     # reads the exact method
+✗  Read src/middleware/auth.py                        # reads 400 lines to find one function
+```
+
+**Bad — whole-file read for symbol analysis:**
+```
+Task: "Debug why user login fails"
+✗  Read src/auth/login.py                            # scans the whole file looking for the bug
+✓  ix trace login --downstream --format json          # then ix read <suspected-failure-point>
+```
 
 ---
 
