@@ -25,9 +25,12 @@ Flags:
   --mcp      Install the ix-memory MCP server and print the codex mcp add command
 
 Notes:
-  - If none of --plugin, --hooks, or --mcp is passed, the installer defaults to --plugin.
+  - If none of --plugin, --hooks, or --mcp is passed, the installer defaults to
+    --plugin --hooks --mcp.
   - --plugin does not activate the plugin in Codex. Restart Codex, then install or enable
     'ix-memory' from the marketplace before its skills appear.
+  - Local Codex plugins do not reliably expose skill autocomplete, so type `$ix-tutorial`
+    manually after enabling the plugin instead of waiting for it to appear in a picker.
   - This wrapper forwards all arguments to scripts/install_codex_integration.py.
 EOF
 }

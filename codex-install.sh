@@ -24,7 +24,7 @@ Usage:
 Behavior:
   - Clones or updates ix-codex-plugin into ~/.ix/codex-plugin-source
   - Runs scripts/install_codex_integration.py from that checkout
-  - Defaults to: --home --plugin --hooks
+  - Defaults to: --home --plugin --hooks --mcp
 
 Options:
   All remaining arguments are forwarded to install_codex_integration.py.
@@ -105,7 +105,7 @@ if [ "$has_target" -eq 0 ]; then
   set -- --home "$@"
 fi
 if [ "$has_action" -eq 0 ]; then
-  set -- --plugin --hooks "$@"
+  set -- --plugin --hooks --mcp "$@"
 fi
 
 exec "$PYTHON_BIN" "$SOURCE_DIR/scripts/install_codex_integration.py" "$@"

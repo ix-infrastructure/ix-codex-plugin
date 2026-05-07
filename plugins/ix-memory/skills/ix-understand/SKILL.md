@@ -73,3 +73,7 @@ Hard limits: No `ix read`. No `ix map`. No `ix trace`. This skill never reads so
 ```
 
 Evidence labels: Mark every claim as `[graph]` (direct ix data) or `[inferred]` (structural reasoning). Never state facts without one of these labels.
+
+**Count and parity claim rule:** Any specific number in the output — tool count, method count, file count, caller count, version string, or a parity claim about another system — must have been returned by an `ix` command run in this session. If the number was not directly surfaced by a command in this run, write `unknown` instead. Training-data recall does not qualify for the `[graph]` label; `[graph]` means a command in this session returned the value.
+
+**Scope fence:** Claims in the output describe the target of this run only. Do not make claims about sister repos, related plugins, or other systems unless this run explicitly queried them with an `ix` command. If a comparison to another system is needed, mark it `[unverified]` and recommend `ix-understand <other-target>` to confirm.

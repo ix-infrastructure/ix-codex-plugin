@@ -25,7 +25,7 @@ echo "-- Checking structure --"
 
 echo ""
 echo "  Skills:"
-for skill in ix-understand ix-investigate ix-impact ix-plan ix-debug ix-architecture ix-docs ix-help; do
+for skill in ix-understand ix-investigate ix-impact ix-plan ix-debug ix-architecture ix-docs ix-help ix-tutorial; do
   [ -f "$REPO/plugins/ix-memory/skills/$skill/SKILL.md" ] && ok "$skill" || fail "missing $skill"
 done
 

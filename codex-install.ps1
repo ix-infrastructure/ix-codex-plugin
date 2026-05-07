@@ -30,7 +30,7 @@ Usage:
 Behavior:
   - Clones or updates ix-codex-plugin into $SourceDir
   - Runs scripts/install_codex_integration.py from that checkout
-  - Defaults to: --home --plugin --hooks
+  - Defaults to: --home --plugin --hooks --mcp
 
 Options:
   All remaining arguments are forwarded to install_codex_integration.py.
@@ -96,6 +96,7 @@ function Ensure-Defaults([string[]]$args) {
     if (-not $hasAction) {
         $result.Add("--plugin")
         $result.Add("--hooks")
+        $result.Add("--mcp")
     }
     foreach ($arg in $args) { $result.Add($arg) }
     return $result.ToArray()

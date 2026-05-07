@@ -24,7 +24,7 @@ PLUGIN_ENTRY = {
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Install the ix-codex-plugin package, hooks, or both into a repo or home config."
+        description="Install the ix-codex-plugin package, hooks, and MCP into a repo or home config."
     )
     target_group = parser.add_mutually_exclusive_group(required=True)
     target_group.add_argument("--repo", help="Target repository root")
@@ -72,6 +72,8 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if not args.plugin and not args.hooks and not args.mcp:
         args.plugin = True
+        args.hooks = True
+        args.mcp = True
     return args
 
 
@@ -397,6 +399,8 @@ def main() -> None:
         print("Plugin files and marketplace entry were installed.")
         print("The plugin is not active yet, so its skills will not appear immediately.")
         print("Restart Codex, then install or enable 'ix-memory' from the marketplace.")
+        print("After that, type '$ix-tutorial' manually in chat.")
+        print("Local Codex plugins do not reliably expose skill autocomplete or slash popups.")
     if args.hooks:
         print("Restart Codex so it reloads .codex/config.toml and hooks.json.")
     if args.mcp:
