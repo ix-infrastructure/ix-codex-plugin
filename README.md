@@ -8,6 +8,7 @@ Codex + Ix = reasoning engine + persistent code knowledge graph. Skills are cogn
 
 This repo now mirrors the `ix-claude-plugin` content model as closely as Codex currently allows:
 - the same seven high-level cognitive skills
+- Codex-specific helper skills for routing and onboarding
 - the same graph-first operating guidance
 - the same agent playbooks, shipped here as reusable docs under `agents/`
 - hook behavior that front-runs shell search/read actions with Ix context
@@ -26,17 +27,45 @@ Ix Pro is optional. If present, the `UserPromptSubmit` hook injects the Ix sessi
 
 ## Skills
 
-High-level cognitive skills:
+Codex registers every skill in [`plugins/ix-memory/skills/`](./plugins/ix-memory/skills/). Use the `$`-prefixed skill name in chat, for example `$ix-tutorial` or `$ix-understand`.
+
+Core analysis skills:
 
 | Skill | What it does | Key rule |
 |-------|--------------|----------|
-| `ix-understand [target]` | Build a mental model of a system or the whole repo | Graph only; no code reads |
-| `ix-investigate <symbol>` | Deep dive: what it is, how it connects, execution path | Graph first; one symbol read max |
-| `ix-impact <target>` | Change risk: blast radius, affected systems, test targets | Depth scales with risk |
-| `ix-plan <targets...>` | Risk-ordered implementation plan for a set of changes | Parallel impact; finds shared dependents |
-| `ix-debug <symptom>` | Root cause analysis from symptom to candidates | Minimal source reads at suspects only |
-| `ix-architecture [scope]` | Design health: coupling, smells, hotspots | Graph only; never reads source |
-| `ix-docs <target> [--full] [--style narrative|reference|hybrid] [--split] [--single-doc] [--out <path>]` | Generate narrative-first documentation with a selective reference layer | Default is onboarding-focused; `--full --style hybrid` goes deepest |
+| `$ix-understand [target]` | Build a mental model of a system or the whole repo | Graph only; no code reads |
+| `$ix-investigate <symbol>` | Deep dive: what it is, how it connects, execution path | Graph first; one symbol read max |
+| `$ix-impact <target>` | Change risk: blast radius, affected systems, test targets | Depth scales with risk |
+| `$ix-plan <targets...>` | Risk-ordered implementation plan for a set of changes | Parallel impact; finds shared dependents |
+| `$ix-debug <symptom>` | Root cause analysis from symptom to candidates | Minimal source reads at suspects only |
+| `$ix-architecture [scope]` | Design health: coupling, smells, hotspots | Graph only; never reads source |
+| `$ix-docs <target> [--full] [--style narrative|reference|hybrid] [--split] [--single-doc] [--out <path>]` | Generate narrative-first documentation with a selective reference layer | Default is onboarding-focused; `--full --style hybrid` goes deepest |
+
+Helper skills:
+
+| Skill | What it does |
+|-------|--------------|
+| `$ix-help <task or question>` | Routes a request to the best Ix skill or raw command |
+| `$ix-tutorial [topic]` | Explains how to use the plugin in Codex with copy-paste examples |
+
+## How To Invoke Skills In Codex
+
+Codex skill invocation uses a `$`-prefixed skill name. Start your prompt with the registered skill name, then add the task or target inline.
+
+Local Codex plugins do not currently guarantee slash-command popups or `/skill` autocomplete for these skills, so `$ix-*` is the reliable primary UX.
+
+Recommended patterns:
+- `$ix-help how does the auth subsystem work?`
+- `$ix-understand this repo`
+- `$ix-investigate IxClient`
+- `$ix-impact Ix/ix-cli/src/client/api.ts`
+- `$ix-plan session_start.py common.py`
+- `$ix-debug ContextService query flow`
+- `$ix-tutorial how do I use the ix-memory plugin in Codex?`
+
+For exact lookups, raw `ix` commands are still appropriate:
+- `Run ix locate IxClient --format json`
+- `Run ix callers IxClient --limit 15 --format json`
 
 ## Agent Playbooks
 
@@ -87,7 +116,7 @@ irm https://ix-infra.com/codex-install.ps1 | iex
 ```
 
 The hosted installers cache the source checkout in `~/.ix/codex-plugin-source` and default to
-`--home --plugin --hooks`.
+`--home --plugin --hooks --mcp`.
 
 If you only want the plugin and not the hooks:
 
@@ -98,7 +127,7 @@ If you only want the plugin and not the hooks:
 If you only want a repo-local install:
 
 ```bash
-./install.sh --repo /path/to/project --plugin --hooks
+./install.sh --repo /path/to/project --plugin --hooks --mcp
 ```
 
 If you want a fully local checkout for development or advanced flags, clone the repo and use the
@@ -107,7 +136,7 @@ local wrappers:
 ```bash
 git clone https://github.com/ix-infrastructure/ix-codex-plugin.git
 cd ix-codex-plugin
-./install.sh --home --plugin --hooks
+./install.sh --home --plugin --hooks --mcp
 ```
 
 ### What gets installed
@@ -128,10 +157,13 @@ Hooks:
 - `.codex/hooks/pre_tool_use.py`
 - `.codex/hooks/stop.py`
 
+MCP:
+- `.codex/mcp/server.py`
+
 ### Home-local install
 
 ```bash
-./install.sh --home --plugin --hooks --mode copy
+./install.sh --home --plugin --hooks --mcp --mode copy
 ```
 
 This writes:
@@ -140,11 +172,12 @@ This writes:
 - `~/.codex/config.toml`
 - `~/.codex/hooks.json`
 - `~/.codex/hooks/*.py`
+- `~/.codex/mcp/server.py`
 
 ### Repo-local install
 
 ```bash
-./install.sh --repo /path/to/project --plugin --hooks --mode copy
+./install.sh --repo /path/to/project --plugin --hooks --mcp --mode copy
 ```
 
 This writes:
@@ -153,11 +186,12 @@ This writes:
 - `/path/to/project/.codex/config.toml`
 - `/path/to/project/.codex/hooks.json`
 - `/path/to/project/.codex/hooks/*.py`
+- `/path/to/project/.codex/mcp/server.py`
 
 ### Symlink mode for local development
 
 ```bash
-./install.sh --repo /path/to/project --plugin --hooks --mode symlink
+./install.sh --repo /path/to/project --plugin --hooks --mcp --mode symlink
 ```
 
 ### Help

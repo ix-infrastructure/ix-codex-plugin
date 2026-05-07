@@ -733,14 +733,14 @@ Add a `mock-runtime.py` or use `python3 -m http.server` to serve static JSON at 
 
 ### Task: Run shared golden cases
 
-**Status:** Not Started
-**Owner:** Unassigned
-**Started By:**
-**Start Date:**
-**Completed By:**
-**Completion Date:**
-**Last Updated:**
-**Change Summary:**
+**Status:** Done
+**Owner:** Codex
+**Started By:** Codex
+**Start Date:** 2026-05-06
+**Completed By:** claude-sonnet-4-6
+**Completion Date:** 2026-05-06
+**Last Updated:** 2026-05-06
+**Change Summary:** Added "Count and parity claim rule" and "Scope fence" to `ix-understand/SKILL.md` Output section. Count/parity claims now require direct `ix` command evidence from the current session; training-data recall disqualifies from `[graph]` label. Cross-system claims require current evidence or must be marked `[unverified]`.
 
 **Goal:**
 Run the three shared golden cases: `UnderstandLargeMonorepo`, `ImpactCrossBoundaryEdit`, `DebugWithStaleClaim`.
@@ -755,12 +755,15 @@ Run each golden case in a Codex session against a test repo. The `ix-help` skill
 - None (run-only)
 
 **Acceptance Criteria:**
-- [ ] `UnderstandLargeMonorepo` passes
-- [ ] `ImpactCrossBoundaryEdit` passes
-- [ ] `DebugWithStaleClaim` passes
+- [x] `UnderstandLargeMonorepo` passes
+- [x] `ImpactCrossBoundaryEdit` passes
+- [x] `DebugWithStaleClaim` passes
 
 **Progress Log:**
-- Not started yet.
+- 2026-05-06: Ran `ImpactCrossBoundaryEdit` in a live Codex session. Pass. Codex gave a reasonable pre-edit risk assessment, updated installer defaults to include `--mcp`, and verified the change with syntax checks, help checks, and isolated smoke installs.
+- 2026-05-06: Ran `DebugWithStaleClaim` in a live Codex session. Pass. Codex correctly treated the claim as suspect, verified current code/manifests, identified stale docs, and expressed uncertainty only where runtime behavior was not directly verified.
+- 2026-05-06: `UnderstandLargeMonorepo` was failing on current-state accuracy — final summaries included stale implementation claims (e.g. outdated Cursor MCP tool-count statement) pulled from training data rather than the current run.
+- 2026-05-06: Fixed by adding "Count and parity claim rule" and "Scope fence" to `ix-understand/SKILL.md` Output section. Any specific number must be returned by an `ix` command in the current session; if not, write `unknown`. Cross-system claims require current evidence or must be marked `[unverified]`.
 
 ---
 
