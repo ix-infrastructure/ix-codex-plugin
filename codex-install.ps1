@@ -25,7 +25,7 @@ function Show-HostedHelp {
 ix-codex-plugin hosted installer
 
 Usage:
-  irm https://ix-infra.com/codex-install.ps1 | iex
+  irm https://raw.githubusercontent.com/ix-infrastructure/ix-codex-plugin/main/codex-install.ps1 | iex
 
 Behavior:
   - Clones or updates ix-codex-plugin into $SourceDir

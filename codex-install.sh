@@ -17,9 +17,9 @@ show_help() {
 ix-codex-plugin hosted installer
 
 Usage:
-  curl -fsSL https://ix-infra.com/codex-install.sh | sh
-  curl -fsSL https://ix-infra.com/codex-install.sh | sh -s -- --mcp
-  curl -fsSL https://ix-infra.com/codex-install.sh | sh -s -- --repo /path/to/project --plugin --hooks
+  curl -fsSL https://raw.githubusercontent.com/ix-infrastructure/ix-codex-plugin/main/codex-install.sh | sh
+  curl -fsSL https://raw.githubusercontent.com/ix-infrastructure/ix-codex-plugin/main/codex-install.sh | sh -s -- --mcp
+  curl -fsSL https://raw.githubusercontent.com/ix-infrastructure/ix-codex-plugin/main/codex-install.sh | sh -s -- --repo /path/to/project --plugin --hooks
 
 Behavior:
   - Clones or updates ix-codex-plugin into ~/.ix/codex-plugin-source
