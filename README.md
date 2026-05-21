@@ -103,7 +103,7 @@ Unsupported Claude-only hook points today:
 ### Quick install
 
 ```bash
-curl -fsSL https://ix-infra.com/codex-install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ix-infrastructure/ix-codex-plugin/main/codex-install.sh | sh
 ```
 
 Then restart Codex and install or enable `ix-memory` from the `ix-codex-plugin` marketplace.
@@ -112,7 +112,7 @@ Running the installer only copies/registers the plugin; the skills do not appear
 PowerShell:
 
 ```powershell
-irm https://ix-infra.com/codex-install.ps1 | iex
+irm https://raw.githubusercontent.com/ix-infrastructure/ix-codex-plugin/main/codex-install.ps1 | iex
 ```
 
 The hosted installers cache the source checkout in `~/.ix/codex-plugin-source` and default to
