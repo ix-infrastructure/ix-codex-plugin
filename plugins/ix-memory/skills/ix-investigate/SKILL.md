@@ -13,20 +13,20 @@ Answer: what is this, how does it connect, and what's the execution path? Stop a
 ## Phase 1 — Locate (always)
 
 ```bash
-ix locate $ARGUMENTS --format json
+ix locate $ARGUMENTS --format llm
 ```
 
 If multiple matches: use `--kind`, `--path`, or `--pick N` to resolve. Do not proceed until the entity is unambiguous.
 
 If `ix locate` returns nothing: try
 ```bash
-ix text $ARGUMENTS --limit 10 --format json
+ix text $ARGUMENTS --limit 10 --format llm
 ```
 
 ## Phase 2 — Explain (always)
 
 ```bash
-ix explain <resolved-symbol> --format json
+ix explain <resolved-symbol> --format llm
 ```
 
 Extract: role, importance, caller count, callee count, confidence score.
@@ -41,12 +41,12 @@ Run only the directions you need, not both by default:
 
 If "who uses this" matters:
 ```bash
-ix callers <symbol> --limit 15 --format json
+ix callers <symbol> --limit 15 --format llm
 ```
 
 If "what does this do internally" matters:
 ```bash
-ix callees <symbol> --limit 15 --format json
+ix callees <symbol> --limit 15 --format llm
 ```
 
 Stop if: you now know who uses it and what it depends on.
@@ -54,7 +54,7 @@ Stop if: you now know who uses it and what it depends on.
 ## Phase 4 — Trace (run only if execution flow is unclear)
 
 ```bash
-ix trace <symbol> --format json
+ix trace <symbol> --format llm
 ```
 
 One trace only. Pick the most representative direction (`--upstream` or `--downstream`) based on the question.
@@ -65,7 +65,7 @@ Stop if: execution path is now clear.
 
 Only if the above steps leave a specific implementation question unanswered:
 ```bash
-ix read <symbol> --format json
+ix read <symbol> --format llm
 ```
 
 Use `ix read <symbol>` — **never a native file read**. Ix is the memory layer; native reads bypass it and load unnecessary context. If the symbol is a class, read the specific method suspected, not the class.

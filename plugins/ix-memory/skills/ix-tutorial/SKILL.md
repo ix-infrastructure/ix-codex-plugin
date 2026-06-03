@@ -31,7 +31,7 @@ Use this example set, adapted only if the user asked for a narrower topic:
 - `$ix-impact Ix/ix-cli/src/client/api.ts`
 - `$ix-plan session_start.py common.py`
 - `$ix-debug ContextService query flow`
-- `Run ix locate IxClient --format json.`
+- `Run ix locate IxClient --format llm.`
 
 If `$ARGUMENTS` is non-empty, tailor the tutorial to that workflow. Keep it concise:
 - answer the user's usage question directly

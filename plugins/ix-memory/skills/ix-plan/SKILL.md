@@ -15,8 +15,8 @@ Answer: in what order should these changes be made, what will break, and what ne
 If `$ARGUMENTS` contains symbol names, proceed.
 If `$ARGUMENTS` is a description (no identifiable symbols), first run:
 ```bash
-ix text "$ARGUMENTS" --limit 10 --format json
-ix locate "$ARGUMENTS" --format json
+ix text "$ARGUMENTS" --limit 10 --format llm
+ix locate "$ARGUMENTS" --format llm
 ```
 Identify the 1-4 most relevant symbols and treat those as targets.
 
@@ -24,8 +24,8 @@ Identify the 1-4 most relevant symbols and treat those as targets.
 
 For each identified target, run simultaneously:
 ```bash
-ix impact  <target> --format json
-ix callers <target> --limit 10 --format json
+ix impact  <target> --format llm
+ix callers <target> --limit 10 --format llm
 ```
 
 Rank targets by risk level: critical > high > medium > low.
@@ -38,7 +38,7 @@ Rank targets by risk level: critical > high > medium > low.
 
 Find how the targets connect:
 ```bash
-ix trace <highest-risk-target> --to <second-target> --format json
+ix trace <highest-risk-target> --to <second-target> --format llm
 ```
 
 Run for the most architecturally significant pair. Skip if targets are in independent subsystems.
@@ -46,7 +46,7 @@ Run for the most architecturally significant pair. Skip if targets are in indepe
 ## Phase 4 — Shared dependents (only if high/critical targets exist; skip if all low risk)
 
 ```bash
-ix depends <highest-risk-target> --depth 2 --format json
+ix depends <highest-risk-target> --depth 2 --format llm
 ```
 
 Identify if any third symbol depends on multiple targets (shared blast radius — highest testing priority).

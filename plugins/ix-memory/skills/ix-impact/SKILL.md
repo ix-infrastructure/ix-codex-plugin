@@ -13,7 +13,7 @@ Answer: what breaks if this changes, and is it safe to proceed? Stop as early as
 ## Phase 1 — Risk score (always)
 
 ```bash
-ix impact $ARGUMENTS --format json
+ix impact $ARGUMENTS --format llm
 ```
 
 Immediately classify:
@@ -28,8 +28,8 @@ Immediately classify:
 
 Run in parallel:
 ```bash
-ix callers  $ARGUMENTS --limit 20 --format json
-ix depends  $ARGUMENTS --depth 2 --format json
+ix callers  $ARGUMENTS --limit 20 --format llm
+ix depends  $ARGUMENTS --depth 2 --format llm
 ```
 
 Extract: direct callers by name and subsystem, transitive count.
@@ -39,7 +39,7 @@ Stop here if risk is `medium`: report callers, suggest verification, done.
 ## Phase 3 — Import chain and subsystem spread (high/critical only)
 
 ```bash
-ix imported-by $ARGUMENTS --format json
+ix imported-by $ARGUMENTS --format llm
 ```
 
 Cross-reference callers + dependents + importers to identify:
@@ -62,7 +62,7 @@ Cross-reference callers + dependents + importers to identify:
 
 **Key callers:** [top 5, with subsystem label]
 
-**At-risk behaviors:** [from ix impact atRiskBehavior field]
+**At-risk behaviors:** [from the ix impact behavior lines]
 
 **Recommended action:**
 - low: proceed, verify [specific callers]

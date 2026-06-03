@@ -94,7 +94,7 @@ If `FULL=true`, tell the user the planned mode, output path, and whether splitti
    - Full mode: method summaries only for key classes or services
 
 4. No raw dumps
-   - Never output raw JSON
+   - Never output raw command output
    - Never paste command logs
    - Never dump full file inventories, all callers, or all methods
 
@@ -166,19 +166,19 @@ Do not run every command mechanically. Reuse earlier results and stop when addit
 
 Always start with:
 ```bash
-ix stats --format json
-ix subsystems --format json
-ix subsystems --list --format json
+ix stats --format llm
+ix subsystems --format llm
+ix subsystems --list --format llm
 ```
 
 If `TARGET` is not obviously the whole repo:
 ```bash
-ix locate "$TARGET" --format json
+ix locate "$TARGET" --format llm
 ```
 
 **Repo-scoping fallback:** If `ix locate "$TARGET"` returns no results or fails, do NOT proceed to repo-global ranking commands — those will pull in unrelated files from the wider monorepo. Instead:
 1. Try `ix locate "$TARGET/"` (trailing slash as path prefix) to match a subdirectory.
-2. If that also fails, run `ix subsystems --list --format json` and find the matching region by name or path prefix.
+2. If that also fails, run `ix subsystems --list --format llm` and find the matching region by name or path prefix.
 3. Use the matched region ID or path prefix for all subsequent commands (`ix overview`, `ix rank`, etc.).
 4. If no match is found in any of the above, stop and ask the user to clarify the target path.
 
@@ -199,9 +199,9 @@ Use the graph to identify systems, subsystem boundaries, and the most important 
 
 Common commands:
 ```bash
-ix overview "$TARGET" --format json
-ix rank --by dependents --kind class --top 10 --exclude-path test --format json
-ix rank --by callers   --kind function --top 10 --exclude-path test --format json
+ix overview "$TARGET" --format llm
+ix rank --by dependents --kind class --top 10 --exclude-path test --format llm
+ix rank --by callers   --kind function --top 10 --exclude-path test --format llm
 ```
 
 If `TARGET` is the whole repo, skip `ix overview "$TARGET"` and rely on the pre-run subsystem data plus the rank results.
@@ -210,14 +210,14 @@ Additional commands by scope:
 
 For repo or system targets:
 ```bash
-ix subsystems "$TARGET" --format json
+ix subsystems "$TARGET" --format llm
 ix subsystems "$TARGET" --explain
 ```
 
 For module or file targets:
 ```bash
-ix contains "$TARGET" --format json
-ix imports  "$TARGET" --format json
+ix contains "$TARGET" --format llm
+ix imports  "$TARGET" --format llm
 ```
 
 Full mode:
@@ -233,7 +233,7 @@ This phase answers how the system works.
 
 Use:
 ```bash
-ix explain "$TARGET" --format json
+ix explain "$TARGET" --format llm
 ```
 
 Also run `ix explain` for the most important orchestrators, services, or entry points identified in Phase 2.
@@ -261,9 +261,9 @@ Map the important dependencies and coupling points.
 
 Use:
 ```bash
-ix callers "$TARGET" --limit 20 --format json
-ix callees "$TARGET" --limit 15 --format json
-ix depends "$TARGET" --depth 2 --format json
+ix callers "$TARGET" --limit 20 --format llm
+ix callees "$TARGET" --limit 15 --format llm
+ix depends "$TARGET" --depth 2 --format llm
 ```
 
 **Repo-level guard:** If `TARGET` is the whole repo, skip `ix callers "$TARGET"`, `ix callees "$TARGET"`, and `ix depends "$TARGET"` entirely — these commands are not meaningful at repo scope and will produce noise. Instead, run them for the top 3-5 boundary components, orchestrators, or subsystem entry points identified in Phase 2, and summarize the cross-subsystem edges they reveal.
@@ -285,7 +285,7 @@ When counts are large:
 
 Otherwise run:
 ```bash
-ix impact "$TARGET" --format json
+ix impact "$TARGET" --format llm
 ```
 
 Full mode:
@@ -303,7 +303,7 @@ Use this phase to populate:
 
 Use:
 ```bash
-ix smells --format json
+ix smells --format llm
 ```
 
 Note: `ix smells` does not support `--path` scoping — results are always repo-wide. If the target is a subsystem or module, filter results by path prefix after retrieval.
@@ -329,7 +329,7 @@ Allowed use cases:
 
 Use:
 ```bash
-ix read <symbol> --format json
+ix read <symbol> --format llm
 ```
 
 **Symbol handoff rule:** The `<symbol>` passed to `ix read` must be the exact resolved identifier returned by a prior `ix locate` or `ix explain` call in this run — not inferred from memory, context, or the target name. If the ID returned by `ix locate` doesn't work directly with `ix read` (no result), try the fully qualified name (e.g. `ClassName.methodName`) or the path-based form. If neither resolves, skip the read and note the gap rather than using an unverified ID.

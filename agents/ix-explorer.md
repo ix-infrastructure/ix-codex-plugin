@@ -46,7 +46,7 @@ Token efficiency over completeness. The goal is to answer the question, not to e
 - Use `ix subsystems` (cached) not `ix map` for architectural questions
 - When ix returns ambiguous results, use `--pick N`, `--path <path>`, or `--kind <kind>` to disambiguate
 - Only fall back to `Grep`, `Glob`, or `Read` when ix returns no results after trying `ix text` and `ix locate`
-- Never output raw JSON
+- Never output raw command output
 
 ## Token budget rules
 

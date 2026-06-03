@@ -22,9 +22,9 @@ Work iteratively. After each step, decide: do I know enough to answer, or must I
 ### Step 1 — Orient
 
 ```bash
-ix subsystems --format json
-ix rank --by dependents --kind class --top 10 --exclude-path test --format json
-ix rank --by callers   --kind function --top 10 --exclude-path test --format json
+ix subsystems --format llm
+ix rank --by dependents --kind class --top 10 --exclude-path test --format llm
+ix rank --by callers   --kind function --top 10 --exclude-path test --format llm
 ```
 
 Run all three in parallel. From the results:
@@ -38,7 +38,7 @@ Stop condition: If the question is about overall architecture and this gives a c
 
 For the 3-5 most important components identified in Step 1:
 ```bash
-ix overview <component> --format json
+ix overview <component> --format llm
 ```
 
 Run in parallel. Extract: what each component contains, what it connects to, its place in the hierarchy.
@@ -49,7 +49,7 @@ Stop condition: If you can describe the role of each top component -> proceed to
 
 ```bash
 ix subsystems <region> --explain
-ix rank --by dependents --kind class --path <region-path> --top 5 --format json
+ix rank --by dependents --kind class --path <region-path> --top 5 --format llm
 ```
 
 Run for at most one region. If the question requires multiple regions, handle the most important one and note the others as follow-up.
@@ -58,7 +58,7 @@ Run for at most one region. If the question requires multiple regions, handle th
 
 For at most 2 components still unclear after Step 2:
 ```bash
-ix explain <component> --format json
+ix explain <component> --format llm
 ```
 
 Hard limits: No `ix read`. No `ix map`. No code reading of any kind unless the user explicitly asks about implementation.

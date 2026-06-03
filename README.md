@@ -64,8 +64,8 @@ Recommended patterns:
 - `$ix-tutorial how do I use the ix-memory plugin in Codex?`
 
 For exact lookups, raw `ix` commands are still appropriate:
-- `Run ix locate IxClient --format json`
-- `Run ix callers IxClient --limit 15 --format json`
+- `Run ix locate IxClient --format llm`
+- `Run ix callers IxClient --limit 15 --format llm`
 
 ## Agent Playbooks
 

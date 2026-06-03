@@ -14,14 +14,14 @@ Build an accurate mental model of the target's structure, purpose, and key compo
 
 Run in parallel:
 ```bash
-ix subsystems --format json
-ix rank --by dependents --kind class --top 10 --exclude-path test --format json
-ix rank --by callers   --kind function --top 10 --exclude-path test --format json
+ix subsystems --format llm
+ix rank --by dependents --kind class --top 10 --exclude-path test --format llm
+ix rank --by callers   --kind function --top 10 --exclude-path test --format llm
 ```
 
 If `$ARGUMENTS` is a named symbol or subsystem (not empty, not `.`, and not a filesystem path), also run:
 ```bash
-ix locate "$ARGUMENTS" --format json
+ix locate "$ARGUMENTS" --format llm
 ```
 Note: `ix locate` resolves symbol names only — skip it entirely when the target is `.` or an empty string (whole-repo); the subsystem + rank results above are sufficient.
 
@@ -34,7 +34,7 @@ Stop here if: `$ARGUMENTS` is empty and rank + subsystems give a clear picture.
 
 Pick the 2-4 most central or unclear components from Phase 1 results. Run in parallel:
 ```bash
-ix overview <component> --format json
+ix overview <component> --format llm
 ```
 
 Do NOT run `ix explain` yet. `ix overview` is cheaper and sufficient for most components.
@@ -45,7 +45,7 @@ Stop here if: you can describe what each component does and how they relate.
 
 For at most 2 components still unclear after Phase 2:
 ```bash
-ix explain <component> --format json
+ix explain <component> --format llm
 ```
 
 Hard limits: No `ix read`. No `ix map`. No `ix trace`. This skill never reads source code.
