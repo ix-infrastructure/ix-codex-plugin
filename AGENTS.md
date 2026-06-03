@@ -31,7 +31,7 @@ This means Codex is not a command wrapper. Codex uses Ix as memory to reason, th
 - Scan entire files unless the whole file is the question
 - Call `ix depends --depth 3+` or `ix trace` without a specific question
 - Assume behavior without graph or code evidence
-- Output raw JSON
+- Output raw command output
 - Run `ix map` for exploration
 - Run `ix rank` without both `--by` and `--kind`
 - Run `ix inventory` without `--kind` — `--kind` is required (e.g. `ix inventory --kind file --path <dir> --format llm`)
