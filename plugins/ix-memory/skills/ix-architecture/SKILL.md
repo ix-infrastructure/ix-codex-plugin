@@ -14,8 +14,8 @@ Answer: how healthy is this system's design, where are the weak boundaries, and 
 
 Run in parallel:
 ```bash
-ix subsystems --format json
-ix subsystems --list --format json
+ix subsystems --format llm
+ix subsystems --list --format llm
 ```
 
 The `--list` output is the **canonical region ID enumeration**. All subsequent scoped `ix subsystems` calls must use only IDs (or name tokens) that appeared in this list. Never pass a raw region ID that was not returned by `--list`.
@@ -23,12 +23,12 @@ The `--list` output is the **canonical region ID enumeration**. All subsequent s
 If `$ARGUMENTS` is provided, resolve it against the `--list` output first:
 - If the argument matches a region name or ID from `--list`, proceed with that ID.
 - If ambiguous (multiple matches), use the most specific match or filter by path prefix.
-- If no match is found in `--list`, do NOT call `ix subsystems <argument>` directly — instead filter the repo-wide `--format json` results by path prefix or name string.
+- If no match is found in `--list`, do NOT call `ix subsystems <argument>` directly — instead filter the repo-wide `--format llm` results by path prefix or name string.
 
 After resolving the target region, run:
 ```bash
 ix subsystems <resolved-id> --explain
-ix subsystems <resolved-id> --format json
+ix subsystems <resolved-id> --format llm
 ```
 
 **Unknown-target recovery:** If a scoped `ix subsystems` call returns `unknown_target` or an ambiguous result, immediately fall back to filtering the full `ix subsystems --list` output. Do not retry with variant spellings or raw numeric IDs not in the enumeration.
@@ -43,7 +43,7 @@ Extract:
 ## Phase 2 — Smells
 
 ```bash
-ix smells --format json
+ix smells --format llm
 ```
 
 If `$ARGUMENTS` scopes to a path or subsystem, do not rerun `ix smells` with a scope flag. Filter the repo-wide results by path prefix after retrieval.
@@ -54,8 +54,8 @@ Classify each finding: `orphan` / `god-module` / `weak-component`.
 
 Run only if Phase 1 or 2 revealed significant issues:
 ```bash
-ix rank --by dependents --kind class    --top 10 --exclude-path test --format json
-ix rank --by dependents --kind function --top 10 --exclude-path test --format json
+ix rank --by dependents --kind class    --top 10 --exclude-path test --format llm
+ix rank --by dependents --kind function --top 10 --exclude-path test --format llm
 ```
 
 Correlate: are the most-depended-on entities also in poorly-bounded subsystems? These are the highest-risk components.

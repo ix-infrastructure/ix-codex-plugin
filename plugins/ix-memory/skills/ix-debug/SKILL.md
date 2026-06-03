@@ -22,12 +22,12 @@ Answer: where in the execution path is this likely failing, and why? Stop once y
 ## Phase 1 — Locate the entry point (always)
 
 ```bash
-ix locate $ARGUMENTS --format json
+ix locate $ARGUMENTS --format llm
 ```
 
 If `$ARGUMENTS` is a symptom description rather than a symbol name, also run:
 ```bash
-ix text "$ARGUMENTS" --limit 10 --format json
+ix text "$ARGUMENTS" --limit 10 --format llm
 ```
 
 Identify the most likely entry point (where the failure originates or first manifests).
@@ -37,7 +37,7 @@ Identify the most likely entry point (where the failure originates or first mani
 ## Phase 2 — Explain (always)
 
 ```bash
-ix explain <entry-point> --format json
+ix explain <entry-point> --format llm
 ```
 
 Extract: role, callers, callees, confidence. Identify whether this is:
@@ -50,7 +50,7 @@ Stop if: the explanation makes the failure source obvious -> skip to Output.
 ## Phase 3 — Trace the execution path
 
 ```bash
-ix trace <entry-point> --downstream --format json
+ix trace <entry-point> --downstream --format llm
 ```
 
 Walk the downstream path. At each step, look for:
@@ -65,7 +65,7 @@ Stop if: trace reveals an obvious candidate -> proceed to Phase 5.
 ## Phase 4 — Callers (if failure might come from upstream)
 
 ```bash
-ix callers <entry-point> --limit 10 --format json
+ix callers <entry-point> --limit 10 --format llm
 ```
 
 Check whether the fault is in how this is called rather than in its own logic.
@@ -74,13 +74,13 @@ Check whether the fault is in how this is called rather than in its own logic.
 
 For each root cause candidate (max 2):
 ```bash
-ix read <candidate-function> --format json
+ix read <candidate-function> --format llm
 ```
 
 Use `ix read <candidate-function>` — **never a native read of the whole file**.
 
 **If `ix read <symbol>` returns ambiguous or unresolved:**
-1. Try the resolved file path from `ix locate`: `ix read <path-from-locate> --format json`
+1. Try the resolved file path from `ix locate`: `ix read <path-from-locate> --format llm`
 2. If that also fails — STOP. Do not fall back to a whole-file native read. Reduce confidence, note which symbol could not be confirmed, and surface the ambiguity in the output.
 
 **Whole-file read ceiling:** At most one whole-file read is permitted per run, and only when absolutely no symbol-level path succeeded. Once a whole-file read has occurred, do NOT issue additional whole-file reads for downstream collaborators or related files. Synthesize from available graph + source evidence and reduce confidence instead.

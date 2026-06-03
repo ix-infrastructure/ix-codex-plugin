@@ -43,7 +43,7 @@ And list the available skills:
 - `$ix-debug <symptom>` — root-cause analysis for bugs
 - `$ix-architecture [scope]` — design health and structural smells
 - `$ix-docs <target>` — onboarding or reference documentation
-- Raw `ix` commands — direct lookups like `ix locate <symbol> --format json`
+- Raw `ix` commands — direct lookups like `ix locate <symbol> --format llm`
 
 ---
 
@@ -59,13 +59,13 @@ Classification table:
 - Design quality, complexity, coupling, smells → `$ix-architecture <scope>`
 - Documentation, onboarding guide, reference docs → `$ix-docs <target>`
 - Simple lookups:
-  - where is X defined (exact name) → `ix locate <symbol> --format json`
-  - search for X by relevance (fuzzy) → `ix search <term> --limit 10 --format json`
-  - who calls X → `ix callers <symbol> --limit 15 --format json`
-  - what does X call → `ix callees <symbol> --limit 15 --format json`
-  - what imports X → `ix imported-by <symbol> --format json`
-  - what matches this text → `ix text "<pattern>" --limit 10 --format json`
-  - what files live under a path → `ix inventory --kind file --path <path> --format json`
+  - where is X defined (exact name) → `ix locate <symbol> --format llm`
+  - search for X by relevance (fuzzy) → `ix search <term> --limit 10 --format llm`
+  - who calls X → `ix callers <symbol> --limit 15 --format llm`
+  - what does X call → `ix callees <symbol> --limit 15 --format llm`
+  - what imports X → `ix imported-by <symbol> --format llm`
+  - what matches this text → `ix text "<pattern>" --limit 10 --format llm`
+  - what files live under a path → `ix inventory --kind file --path <path> --format llm`
 
 ---
 
