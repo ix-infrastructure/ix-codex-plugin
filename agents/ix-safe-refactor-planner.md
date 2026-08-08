@@ -82,6 +82,8 @@ Use only to understand what a target does if ix explain was insufficient.
 
 ### Step 7 — Pro context (if ix pro available)
 
+Detect Pro by running `ix briefing --format json`. It returns JSON with a `revision` field when Pro is active, and exits 1 with `The 'briefing' command requires Ix Pro.` otherwise. Do not probe with `--help` — Pro commands are always registered (as stubs when @ix/pro is absent), so `--help` succeeds either way and tells you nothing.
+
 Before finalizing the plan, check for existing decisions or plans that constrain this refactor:
 ```bash
 ix decisions --format json

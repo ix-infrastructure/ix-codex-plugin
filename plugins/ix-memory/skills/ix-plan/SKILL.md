@@ -55,6 +55,8 @@ Identify if any third symbol depends on multiple targets (shared blast radius �
 
 ## Phase 5 — Ix Pro plan (if ix pro available)
 
+Detect Pro by running `ix briefing --format json`. It returns JSON with a `revision` field when Pro is active, and exits 1 with `The 'briefing' command requires Ix Pro.` otherwise. Do not probe with `--help` — Pro commands are always registered (as stubs when @ix/pro is absent), so `--help` succeeds either way and tells you nothing.
+
 If `ix briefing` or session context indicates active plans exist, you **must** run:
 ```bash
 ix plans --format json

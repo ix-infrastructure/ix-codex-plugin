@@ -22,6 +22,10 @@ PRO_CACHE_PATH = CACHE_DIR / "ix-pro.json"
 RUNTIME_HEALTH_CACHE_PATH = CACHE_DIR / "ix-runtime-health.json"
 
 HEALTH_TTL_SECONDS = 30
+# Whether @ix/pro is installed changes only when someone installs or removes it,
+# and the probe now runs a real command rather than `--help`, so it is cached far
+# longer than the health check it used to borrow its TTL from.
+PRO_TTL_SECONDS = 3600
 BRIEFING_TTL_SECONDS = 600
 RUNTIME_HEALTH_TTL_SECONDS = 30
 
@@ -249,10 +253,22 @@ def ix_pro_available(cwd: str | Path | None) -> bool:
         if isinstance(cached, dict):
             timestamp = float(cached.get("timestamp", 0))
             ok = bool(cached.get("ok", False))
-            if time.time() - timestamp < HEALTH_TTL_SECONDS:
+            if time.time() - timestamp < PRO_TTL_SECONDS:
                 return ok
 
-    result = run_command(["ix", "briefing", "--help"], cwd=cwd, timeout=8)
+    # Probe with the real command, not `--help`.
+    #
+    # Pro commands are always *registered* — without @ix/pro the CLI installs a
+    # stub for each one, whose action prints "The 'briefing' command requires Ix
+    # Pro." and sets exit 1. But `--help` is handled by commander before any
+    # action runs, so `ix briefing --help` exits 0 on a stub exactly as it does
+    # on the real thing. Probing with it reported Pro as available on every OSS
+    # install, and the hooks then ran Pro commands that could only fail.
+    #
+    # Running the command itself is the discriminator: the stub exits 1, the
+    # real command exits 0. ix_healthy() is checked before this, so the backend
+    # is already known reachable.
+    result = run_command(["ix", "briefing", "--format", "json"], cwd=cwd, timeout=8)
     ok = bool(result and result.returncode == 0)
     _write_cache(PRO_CACHE_PATH, {"timestamp": time.time(), "ok": ok})
     return ok
