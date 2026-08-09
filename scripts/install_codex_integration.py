@@ -5,9 +5,17 @@ import argparse
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
+
+try:  # 3.11+
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - older interpreters
+    # Only used to prove the edit below produced valid TOML. Without it the
+    # installer still works; it just cannot double-check itself.
+    tomllib = None  # type: ignore[assignment]
 
 
 PLUGIN_NAME = "ix-memory"
@@ -225,33 +233,96 @@ def update_marketplace(
     write_json(marketplace_path, payload)
 
 
+_TABLE_RE = re.compile(r"^\s*\[([^\]]*)\]\s*$")
+_CODEX_HOOKS_RE = re.compile(r"^(\s*)codex_hooks\s*=")
+
+
+def _is_comment(line: str) -> bool:
+    return line.lstrip().startswith("#")
+
+
+def enable_codex_hooks(text: str) -> str | None:
+    """Return `text` with `codex_hooks = true` under [features], or None if no change is needed.
+
+    The previous version tested `"codex_hooks = true" in text` and, failing that,
+    appended a second assignment to the end of the [features] table. Against an
+    existing `codex_hooks = false` that produced a duplicate key, which is not
+    valid TOML -- so the installer exited 0 having made the config unloadable.
+    The same substring test also read `# codex_hooks = true` in a comment as
+    already-enabled, and missed `codex_hooks=true` written without spaces.
+
+    So this tracks which table each line belongs to and rewrites the existing
+    assignment in place instead of adding one. Duplicates left behind by the old
+    installer are collapsed rather than preserved: someone hitting this bug
+    already has a broken file, and refusing to touch it would leave them to hand-
+    edit TOML to run an installer.
+    """
+    lines = text.splitlines()
+    table: str | None = None
+    key_lines: list[int] = []
+    features_end: int | None = None
+
+    for index, line in enumerate(lines):
+        header = _TABLE_RE.match(line)
+        if header:
+            if table == "features":
+                features_end = index
+            table = header.group(1).strip()
+            continue
+        if table == "features" and not _is_comment(line) and _CODEX_HOOKS_RE.match(line):
+            key_lines.append(index)
+
+    if table == "features":
+        features_end = len(lines)
+
+    if key_lines:
+        first = key_lines[0]
+        indent = _CODEX_HOOKS_RE.match(lines[first]).group(1)
+        if lines[first] == f"{indent}codex_hooks = true" and len(key_lines) == 1:
+            return None
+        lines[first] = f"{indent}codex_hooks = true"
+        # Drop the extras back-to-front so earlier indices stay valid.
+        for duplicate in reversed(key_lines[1:]):
+            del lines[duplicate]
+    elif features_end is not None:
+        # [features] exists without the key. Insert at the end of that table, not
+        # the end of the file, or it would land under whatever table came next.
+        at = features_end
+        while at > 0 and not lines[at - 1].strip():
+            at -= 1
+        lines.insert(at, "codex_hooks = true")
+    else:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend(["[features]", "codex_hooks = true"])
+
+    return "\n".join(lines) + "\n"
+
+
 def ensure_codex_hooks_enabled(config_path: Path) -> None:
     if not config_path.exists():
         install_file(source_codex_dir() / "config.toml", config_path, "copy", force=False)
         return
 
-    text = config_path.read_text()
-    if "codex_hooks = true" in text:
+    updated = enable_codex_hooks(config_path.read_text())
+    if updated is None:
         return
 
-    lines = text.splitlines()
-    inserted = False
-    for index, line in enumerate(lines):
-        if line.strip() == "[features]":
-            insert_at = index + 1
-            while insert_at < len(lines) and not lines[insert_at].startswith("["):
-                insert_at += 1
-            lines.insert(insert_at, "codex_hooks = true")
-            inserted = True
-            break
-
-    if not inserted:
-        if lines and lines[-1].strip():
-            lines.append("")
-        lines.extend(["[features]", "codex_hooks = true"])
+    # Never write something the user's TOML parser will reject. Only the *result*
+    # has to parse -- requiring the input to would refuse to run on a config the
+    # old version of this function already corrupted, which is precisely the file
+    # most in need of the repair above.
+    if tomllib is not None:
+        try:
+            tomllib.loads(updated)
+        except tomllib.TOMLDecodeError as exc:
+            raise SystemExit(
+                f"Refusing to write {config_path}: the result would not be valid TOML ({exc}).\n"
+                f"Set 'codex_hooks = true' under [features] by hand and re-run."
+            ) from exc
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text("\n".join(lines) + "\n")
+    config_path.write_text(updated)
 
 
 def _source_git_commit() -> str | None:
