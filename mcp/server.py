@@ -46,9 +46,17 @@ mcp = _Server("ix-memory")
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _run(args: list[str], timeout: int = 15) -> tuple[bool, str, str]:
+    """Run `ix` with the given subcommand and flags.
+
+    The executable is prepended here rather than written out at each of the 23
+    tools, because that is exactly what went wrong: every tool but ix_health
+    passed only the subcommand, so Python tried to execute programs named
+    `stats`, `locate` and `map`. One tool spelling it correctly is what let the
+    server look alive while nothing else in it worked.
+    """
     try:
         r = subprocess.run(
-            args, capture_output=True, text=True, timeout=timeout, check=False
+            ["ix", *args], capture_output=True, text=True, timeout=timeout, check=False
         )
         return r.returncode == 0, r.stdout, r.stderr
     except (OSError, subprocess.SubprocessError) as exc:
@@ -67,7 +75,16 @@ def _parse(text: str) -> object:
 
 
 def _json(args: list[str], timeout: int = 15) -> object:
-    ok, stdout, _ = _run(args, timeout)
+    """Run an ix query and parse its output as JSON.
+
+    `--format json` is requested rather than assumed. This parsed stdout as JSON
+    while asking for nothing, so it was reading the human-oriented text output --
+    _parse would find the first `{` or `[` in a rendered table and either fail or,
+    worse, succeed on a fragment. Every subcommand reached from here accepts the
+    flag; the ones that do not take --format at all (config, init, reset, upgrade,
+    view, watch) are not exposed as tools.
+    """
+    ok, stdout, _ = _run([*args, "--format", "json"], timeout)
     return _parse(stdout) if ok else None
 
 
@@ -88,7 +105,9 @@ def ix_health() -> str:
     """Check whether the ix CLI is available and the graph is ready."""
     if not shutil.which("ix"):
         return json.dumps({"error": "ix CLI not found. Install it and ensure it is on PATH.", "graph_ready": False})
-    ok, stdout, stderr = _run(["ix", "--version"], timeout=5)
+    # No "ix" here any more: _run prepends it. This tool was the only one that
+    # passed it, which is why it was the only one that worked.
+    ok, stdout, stderr = _run(["--version"], timeout=5)
     if not ok:
         return json.dumps({"error": f"ix health probe failed: {stderr.strip()}", "graph_ready": False})
     version = stdout.strip().split()[0] if stdout.strip() else "unknown"
