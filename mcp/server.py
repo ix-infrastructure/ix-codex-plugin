@@ -23,10 +23,23 @@ mcp = FastMCP("ix-memory")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _run(args: list[str], timeout: int = 15) -> tuple[bool, str, str]:
+def _ix_argv(args: list[str], *, json_output: bool = False) -> list[str]:
+    argv = ["ix", *args]
+    if json_output:
+        argv += ["--format", "json"]
+    return argv
+
+
+def _run(
+    args: list[str], timeout: int = 15, *, json_output: bool = False
+) -> tuple[bool, str, str]:
     try:
         r = subprocess.run(
-            args, capture_output=True, text=True, timeout=timeout, check=False
+            _ix_argv(args, json_output=json_output),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
         )
         return r.returncode == 0, r.stdout, r.stderr
     except (OSError, subprocess.SubprocessError) as exc:
@@ -45,7 +58,7 @@ def _parse(text: str) -> object:
 
 
 def _json(args: list[str], timeout: int = 15) -> object:
-    ok, stdout, _ = _run(args, timeout)
+    ok, stdout, _ = _run(args, timeout, json_output=True)
     return _parse(stdout) if ok else None
 
 
@@ -66,7 +79,7 @@ def ix_health() -> str:
     """Check whether the ix CLI is available and the graph is ready."""
     if not shutil.which("ix"):
         return json.dumps({"error": "ix CLI not found. Install it and ensure it is on PATH.", "graph_ready": False})
-    ok, stdout, stderr = _run(["ix", "--version"], timeout=5)
+    ok, stdout, stderr = _run(["--version"], timeout=5)
     if not ok:
         return json.dumps({"error": f"ix health probe failed: {stderr.strip()}", "graph_ready": False})
     version = stdout.strip().split()[0] if stdout.strip() else "unknown"

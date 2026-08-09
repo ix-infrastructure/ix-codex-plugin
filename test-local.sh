@@ -61,6 +61,10 @@ python3 -m py_compile \
   "$REPO/mcp/server.py" >/dev/null \
   && ok "Python files compile" || fail "Python compile failed"
 
+python3 -m unittest discover -s "$REPO/tests" >/dev/null \
+  && ok "MCP tools invoke the ix CLI with structured output" \
+  || fail "MCP CLI invocation tests failed"
+
 echo ""
 echo "-- hooks.json event coverage --"
 
