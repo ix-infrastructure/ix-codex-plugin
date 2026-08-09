@@ -47,6 +47,60 @@ function Require-Command($name) {
     }
 }
 
+# Run a native command without letting its stderr abort the install.
+#
+# Windows PowerShell 5.1 turns everything a native command writes to stderr into
+# an ErrorRecord, and the $ErrorActionPreference = "Stop" above makes that
+# terminating. git writes ordinary progress there on success -- "From
+# https://github.com/..." after a fetch, "Cloning into '...'" after a clone --
+# so the installer aborted with NativeCommandError on commands that had actually
+# worked, and told the user nothing except a line number. PowerShell 7 stopped
+# treating native stderr as errors, which is why this only ever reproduced for
+# some people.
+#
+# So: drop to Continue for the duration of the call, and flatten the merged
+# streams to plain strings, which is what stops an ErrorRecord surviving as an
+# error rather than as text. Then decide on $LASTEXITCODE, which is the only
+# thing that actually reports whether the command succeeded. ForEach-Object
+# rather than Select-Object here on purpose -- -First halts the native command
+# with StopUpstreamCommandsException and loses the exit code with it.
+#
+# These calls previously had no exit-code check at all, so the stderr bug was
+# also the only thing standing in for one: a genuinely failed fetch would have
+# been just as invisible as a successful one was fatal.
+function Invoke-Native {
+    param(
+        [Parameter(Mandatory = $true)][string]$Command,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$FailureMessage
+    )
+
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & $Command @Arguments 2>&1 | ForEach-Object { "$_" }
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ""
+        $output | ForEach-Object { Write-Host "  $_" }
+        Write-Err $FailureMessage
+    }
+
+    return $output
+}
+
+function Invoke-Git {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$FailureMessage
+    )
+
+    return Invoke-Native -Command "git" -Arguments $Arguments -FailureMessage $FailureMessage
+}
+
 function Get-PythonCommand {
     if (Get-Command py -ErrorAction SilentlyContinue) { return @("py", "-3") }
     if (Get-Command python -ErrorAction SilentlyContinue) { return @("python") }
@@ -56,7 +110,20 @@ function Get-PythonCommand {
 
 function Repo-IsDirty {
     if (-not (Test-Path (Join-Path $SourceDir ".git"))) { return $false }
-    $status = git -C $SourceDir status --short 2>$null
+    # Not Invoke-Git: this one keeps stderr discarded rather than merged, since
+    # merging it would let a git warning read as a modified file and silently
+    # downgrade the install to "use the existing checkout". It still needs the
+    # Continue window, because 2>$null on 5.1 discards the text but not the
+    # terminating error the redirection itself produces. A status that cannot
+    # run is treated as clean and left to the fetch below to report properly.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $status = & git -C $SourceDir status --short 2>$null
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+    if ($LASTEXITCODE -ne 0) { return $false }
     return -not [string]::IsNullOrWhiteSpace(($status | Out-String))
 }
 
@@ -67,9 +134,9 @@ function Sync-Repo {
             return
         }
         Write-Ok "Updating cached source checkout in $SourceDir"
-        git -C $SourceDir remote set-url origin $RepoUrl
-        git -C $SourceDir fetch --depth 1 origin $Ref
-        git -C $SourceDir checkout --quiet FETCH_HEAD
+        $null = Invoke-Git -Arguments @("-C", $SourceDir, "remote", "set-url", "origin", $RepoUrl) -FailureMessage "Could not point $SourceDir at $RepoUrl."
+        $null = Invoke-Git -Arguments @("-C", $SourceDir, "fetch", "--depth", "1", "origin", $Ref) -FailureMessage "Could not fetch $Ref from $RepoUrl. Check your network and try again."
+        $null = Invoke-Git -Arguments @("-C", $SourceDir, "checkout", "--quiet", "FETCH_HEAD") -FailureMessage "Fetched $Ref but could not check it out in $SourceDir."
         return
     }
 
@@ -79,7 +146,7 @@ function Sync-Repo {
 
     New-Item -ItemType Directory -Force -Path $IxHome | Out-Null
     Write-Ok "Cloning ix-codex-plugin into $SourceDir"
-    git clone --depth 1 --branch $Ref $RepoUrl $SourceDir
+    $null = Invoke-Git -Arguments @("clone", "--depth", "1", "--branch", $Ref, $RepoUrl, $SourceDir) -FailureMessage "Could not clone $RepoUrl into $SourceDir."
 }
 
 function Ensure-Defaults([string[]]$args) {
@@ -120,5 +187,17 @@ if ($pythonCmd.Count -gt 1) {
 $pythonArgs += $installer
 $pythonArgs += $effectiveArgs
 
-& $pythonCmd[0] @pythonArgs
+# The same 5.1 stderr hazard, but this one cannot be captured: the Python
+# installer's output is the user-facing result of the whole command and has to
+# reach the console as it happens. So it gets the Continue window without the
+# capture, and $LASTEXITCODE still decides the outcome. Without this, a Python
+# that printed a single DeprecationWarning would abort here -- after the work was
+# already done -- and never reach the exit below.
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+    & $pythonCmd[0] @pythonArgs
+} finally {
+    $ErrorActionPreference = $prevEap
+}
 exit $LASTEXITCODE
