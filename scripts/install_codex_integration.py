@@ -5,6 +5,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -230,25 +231,45 @@ def ensure_codex_hooks_enabled(config_path: Path) -> None:
         install_file(source_codex_dir() / "config.toml", config_path, "copy", force=False)
         return
 
-    text = config_path.read_text()
-    if "codex_hooks = true" in text:
-        return
+    lines = config_path.read_text().splitlines()
+    features_start = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if re.fullmatch(r"\s*\[features\]\s*(?:#.*)?", line)
+        ),
+        None,
+    )
 
-    lines = text.splitlines()
-    inserted = False
-    for index, line in enumerate(lines):
-        if line.strip() == "[features]":
-            insert_at = index + 1
-            while insert_at < len(lines) and not lines[insert_at].startswith("["):
-                insert_at += 1
-            lines.insert(insert_at, "codex_hooks = true")
-            inserted = True
-            break
-
-    if not inserted:
+    if features_start is None:
         if lines and lines[-1].strip():
             lines.append("")
         lines.extend(["[features]", "codex_hooks = true"])
+    else:
+        features_end = next(
+            (
+                index
+                for index in range(features_start + 1, len(lines))
+                if re.match(r"\s*\[", lines[index])
+            ),
+            len(lines),
+        )
+        setting_pattern = re.compile(
+            r"^(\s*)codex_hooks(\s*=\s*)(?:true|false)(\s*(?:#.*)?)$"
+        )
+        setting_indexes = [
+            index
+            for index in range(features_start + 1, features_end)
+            if setting_pattern.fullmatch(lines[index])
+        ]
+
+        if setting_indexes:
+            first = setting_indexes[0]
+            lines[first] = setting_pattern.sub(r"\1codex_hooks\2true\3", lines[first])
+            for duplicate in reversed(setting_indexes[1:]):
+                del lines[duplicate]
+        else:
+            lines.insert(features_end, "codex_hooks = true")
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("\n".join(lines) + "\n")

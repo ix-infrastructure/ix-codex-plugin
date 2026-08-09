@@ -61,6 +61,58 @@ python3 -m py_compile \
   "$REPO/mcp/server.py" >/dev/null \
   && ok "Python files compile" || fail "Python compile failed"
 
+python3 - "$REPO/scripts/install_codex_integration.py" << 'PYEOF' \
+  && ok "installer preserves valid TOML when enabling hooks" \
+  || fail "installer hook config TOML tests failed"
+import importlib.util
+import sys
+import tempfile
+from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    tomllib = None
+
+spec = importlib.util.spec_from_file_location("installer", sys.argv[1])
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
+
+cases = [
+    (
+        "[features]\ncodex_hooks = false\n\n[projects.\"/tmp/example\"]\ntrust_level = \"trusted\"\n",
+        "trusted",
+    ),
+    (
+        "[features]\n# codex_hooks = true\n\n[projects.\"/tmp/example\"]\ntrust_level = \"trusted\"\n",
+        "trusted",
+    ),
+    (
+        "[projects.\"/tmp/example\"]\ntrust_level = \"trusted\"\n",
+        "trusted",
+    ),
+]
+
+with tempfile.TemporaryDirectory() as temp_dir:
+    for index, (initial, expected_trust) in enumerate(cases):
+        config = Path(temp_dir) / f"config-{index}.toml"
+        config.write_text(initial)
+        installer.ensure_codex_hooks_enabled(config)
+        updated = config.read_text()
+        if tomllib is not None:
+            parsed = tomllib.loads(updated)
+            assert parsed["features"]["codex_hooks"] is True
+            assert parsed["projects"]["/tmp/example"]["trust_level"] == expected_trust
+        else:
+            assert f'trust_level = "{expected_trust}"' in updated
+        assignments = [
+            line.strip()
+            for line in updated.splitlines()
+            if line.strip().startswith("codex_hooks =")
+        ]
+        assert assignments == ["codex_hooks = true"]
+PYEOF
+
 echo ""
 echo "-- hooks.json event coverage --"
 
