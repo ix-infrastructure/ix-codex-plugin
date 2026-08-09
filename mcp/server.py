@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ix-memory MCP server — stdio transport, Python FastMCP.
+"""ix-memory MCP server — stdio transport, MCP Python SDK.
 
 23 tools mirroring the Cursor plugin tool set.  All tools call the ix CLI
 directly (same fallback strategy as the other hooks).  Future work will
@@ -16,9 +16,31 @@ import shutil
 import subprocess
 from typing import Optional
 
-from mcp.server.fastmcp import FastMCP
+# The MCP Python SDK renamed FastMCP to MCPServer in 2.0.0 and moved it from
+# mcp.server.fastmcp to mcp.server.mcpserver. Nothing in this repo installs or
+# pins the SDK — the installer copies this file and prints a `codex mcp add`
+# line — so whichever version pip last resolved is what this has to run on, and
+# both lines are in the wild. On a fresh `pip install mcp` the v1 import raises
+# ModuleNotFoundError, and all Codex surfaces is that the ix-memory client
+# "failed to start".
+#
+# Only the constructor moved. Everything below is unchanged across the two:
+# @mcp.tool() keeps its name and signature, the tools stay plain functions
+# returning str, and run(transport="stdio") is the same call. None of them use
+# the get_context() that v2 removed, so there is nothing to adapt per tool.
+try:  # mcp >= 2.0.0
+    from mcp.server.mcpserver import MCPServer as _Server
+except ImportError:  # mcp < 2.0.0
+    try:
+        from mcp.server.fastmcp import FastMCP as _Server
+    except ImportError as exc:  # the SDK is missing outright, not merely older
+        raise SystemExit(
+            "ix-memory MCP server requires the MCP Python SDK, which is not "
+            "installed for this interpreter.\n"
+            "  pip install mcp"
+        ) from exc
 
-mcp = FastMCP("ix-memory")
+mcp = _Server("ix-memory")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

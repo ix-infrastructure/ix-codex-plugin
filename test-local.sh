@@ -97,20 +97,30 @@ echo "-- MCP server checks --"
 python3 -c "
 import sys
 sys.path.insert(0, '$REPO/.codex/hooks')
-# mcp package must be importable for the server to work
+# The SDK must be importable for the server to work, under either of its names.
+# 2.0.0 renamed FastMCP to MCPServer and moved it to mcp.server.mcpserver; this
+# check pinned the v1 path, so it reported a missing package on a machine where
+# the package was installed and current.
 try:
-    from mcp.server.fastmcp import FastMCP
-    print('  [ok] mcp package importable')
+    from mcp.server.mcpserver import MCPServer
+    print('  [ok] mcp package importable (>= 2.0.0)')
 except ImportError:
-    print('  [FAIL] mcp package not installed (pip install mcp)')
-    sys.exit(1)
+    try:
+        from mcp.server.fastmcp import FastMCP
+        print('  [ok] mcp package importable (< 2.0.0)')
+    except ImportError:
+        print('  [FAIL] mcp package not installed (pip install mcp)')
+        sys.exit(1)
 
 # Verify server.py registers at least 20 tools
-import importlib.util, types
+import asyncio, importlib.util
 spec = importlib.util.spec_from_file_location('mcp_server', '$REPO/mcp/server.py')
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-tool_count = len(mod.mcp._tool_manager._tools)  # dict keyed by tool name
+# list_tools(), not the _tool_manager._tools it used to read: a private
+# attribute is exactly what a major version is free to move, and this test
+# exists to catch that class of break rather than take part in it.
+tool_count = len(asyncio.run(mod.mcp.list_tools()))
 if tool_count >= 20:
     print(f'  [ok] MCP server registers {tool_count} tools')
 else:
