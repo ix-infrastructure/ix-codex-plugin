@@ -13,9 +13,17 @@ from pathlib import Path
 try:  # 3.11+
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - older interpreters
-    # Only used to prove the edit below produced valid TOML. Without it the
-    # installer still works; it just cannot double-check itself.
-    tomllib = None  # type: ignore[assignment]
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ModuleNotFoundError:
+        # Two things depend on this now, not one: reading the config to decide
+        # whether an edit is needed at all, and proving the result parses before
+        # writing it. Without either, the spellings enable_codex_hooks cannot
+        # edit -- an inline table, a dotted key -- get a second [features]
+        # appended and the invalid result is written out, which is the bug this
+        # whole path exists to prevent. So on <3.11 without tomli it declines to
+        # touch an existing config rather than risk corrupting it.
+        tomllib = None  # type: ignore[assignment]
 
 
 PLUGIN_NAME = "ix-memory"
@@ -239,12 +247,32 @@ def update_marketplace(
 # `codex_hooks` key inside one was then collapsed as a duplicate and deleted --
 # silently, and the result still parses, so the tomllib guard below cannot catch
 # it. That is worse in kind than the corruption this function exists to fix.
-_TABLE_RE = re.compile(r"^\s*(\[\[?)\s*([^\[\]]*?)\s*\]\]?\s*$")
-_CODEX_HOOKS_RE = re.compile(r"^(\s*)codex_hooks\s*=")
+#
+# The name is `.*?` rather than a "no brackets" class because brackets are legal
+# inside a quoted key -- `[projects."C:\repos\proj[old]"]` is a real header, and
+# Codex writes real repo paths into these. Excluding them left that header
+# unrecognised too, which is the same silent-deletion bug as `[[x]]` by another
+# route. The anchors still do the work: the line must start with `[` and end with
+# `]`, so `x = [1]` and `[features] # note` are unaffected.
+_TABLE_RE = re.compile(r"^\s*(\[\[?)\s*(.*?)\s*\]\]?\s*$")
+# Quoted spellings too: TOML treats `"codex_hooks"` and `codex_hooks` as the same
+# key, so missing the quoted form meant inserting a second assignment beside it
+# and producing a duplicate the output check then rejected. The rewrite
+# normalises it to the bare form, which is the same key.
+_CODEX_HOOKS_RE = re.compile(r"""^(\s*)(?:codex_hooks|"codex_hooks"|'codex_hooks')\s*=""")
 
 
 def _is_comment(line: str) -> bool:
     return line.lstrip().startswith("#")
+
+
+def _has_features_header(text: str) -> bool:
+    """True when a literal `[features]` table header is present to edit."""
+    for line in text.splitlines():
+        header = _TABLE_RE.match(line)
+        if header and header.group(1) == "[" and header.group(2) == "features":
+            return True
+    return False
 
 
 def enable_codex_hooks(text: str) -> str | None:
@@ -280,6 +308,24 @@ def enable_codex_hooks(text: str) -> str | None:
         else:
             if isinstance(features, dict) and features.get("codex_hooks") is True:
                 return None
+            # Already spelled some other way, but not enabled. The rewriter would
+            # append a second [features] and the output check would reject it --
+            # correct, but under a message about invalid TOML, which points at
+            # the wrong thing entirely. The config is fine; this function just
+            # cannot edit that form. Say so, with the value it found.
+            if features is not None and not _has_features_header(text):
+                current = (
+                    features.get("codex_hooks", "<unset>")
+                    if isinstance(features, dict)
+                    else features
+                )
+                raise SystemExit(
+                    f"Cannot enable codex_hooks automatically: `features` is "
+                    f"declared in a form this installer does not edit (found "
+                    f"{current!r}).\n"
+                    f"Set `codex_hooks = true` under a [features] table by hand "
+                    f"and re-run."
+                )
 
     lines = text.splitlines()
     table: str | None = None
@@ -318,6 +364,18 @@ def enable_codex_hooks(text: str) -> str | None:
             at -= 1
         lines.insert(at, "codex_hooks = true")
     else:
+        if tomllib is None and text.strip():
+            # Appending a table blind is the one branch that can corrupt a config
+            # we were unable to read: if `features` is already declared some other
+            # way, this produces a duplicate declaration, and with no parser there
+            # is nothing to catch it before the write.
+            raise SystemExit(
+                "Cannot safely enable codex_hooks: this interpreter has neither "
+                "tomllib (Python 3.11+) nor tomli, so the existing config cannot "
+                "be checked before editing.\n"
+                "Run the installer with Python 3.11+, `pip install tomli`, or set "
+                "`codex_hooks = true` under a [features] table by hand."
+            )
         if lines and lines[-1].strip():
             lines.append("")
         lines.extend(["[features]", "codex_hooks = true"])

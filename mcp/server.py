@@ -45,6 +45,33 @@ mcp = _Server("ix-memory")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+# Resolving the executable is necessary on Windows (see _run) but it is not free:
+# npm ships no `ix.exe`, so shutil.which returns `ix.CMD`, and CreateProcess runs
+# a .cmd/.bat by handing the command line to `cmd.exe /c`. Every argument is then
+# parsed by a shell before the CLI sees it -- and subprocess only quotes
+# arguments containing whitespace, so `Widget&whoami` splits into two commands
+# while `Widget & whoami` does not. `%VAR%` is expanded either way, and a literal
+# `"` escapes the quoting that protects the rest.
+#
+# These arguments come from tool calls the model makes, so the content is not
+# trusted. Quoting correctly for cmd.exe is a well-known trap -- it is what
+# CVE-2024-24576 was -- so this refuses the input instead of trying to escape it.
+# The cost is that a symbol named with one of these cannot be queried on Windows,
+# which beats running it.
+_CMD_SHIM_SUFFIXES = (".cmd", ".bat")
+_CMD_METACHARACTERS = frozenset('&|<>^"%\r\n')
+
+
+def _unsafe_for_cmd_shim(executable: str, args: list[str]) -> str:
+    """The cmd.exe metacharacters in `args`, if this executable routes through one."""
+    if not executable.lower().endswith(_CMD_SHIM_SUFFIXES):
+        return ""
+    found: set[str] = set()
+    for arg in args:
+        found |= set(arg) & _CMD_METACHARACTERS
+    return " ".join(repr(c) for c in sorted(found))
+
+
 def _run(args: list[str], timeout: int = 15) -> tuple[bool, str, str]:
     """Run `ix` with the given subcommand and flags.
 
@@ -65,6 +92,13 @@ def _run(args: list[str], timeout: int = 15) -> tuple[bool, str, str]:
     executable = shutil.which("ix")
     if executable is None:
         return False, "", "ix CLI not found. Install it and ensure it is on PATH."
+    unsafe = _unsafe_for_cmd_shim(executable, args)
+    if unsafe:
+        return False, "", (
+            f"refusing to run `ix {args[0] if args else ''}`: an argument contains "
+            f"{unsafe} , which the Windows command processor would act on rather "
+            "than pass to the CLI. Rename the symbol or query it by path."
+        )
     try:
         r = subprocess.run(
             [executable, *args],
@@ -99,7 +133,9 @@ def _json(args: list[str], timeout: int = 15) -> object:
     flag; the ones that do not take --format at all (config, init, reset, upgrade,
     view, watch) are not exposed as tools.
     """
-    ok, stdout, _ = _run([*args, "--format", "json"], timeout)
+    global _last_stderr
+    ok, stdout, stderr = _run([*args, "--format", "json"], timeout)
+    _last_stderr = stderr
     return _parse(stdout) if ok else None
 
 
@@ -107,8 +143,17 @@ def _ok(data: object) -> str:
     return json.dumps(data, indent=2) if data is not None else json.dumps({})
 
 
+# stderr from the most recent _json call, so its 21 callers can report why they
+# failed without each having to thread it through. _json returns bare data, so
+# the reason was simply dropped and every failure read "failed without output" --
+# including "ix CLI not found" and the refusal in _run, which are exactly the two
+# a user needs to see. The tool functions are synchronous, so one runs to
+# completion before the next starts and there is nothing to interleave.
+_last_stderr = ""
+
+
 def _err(tool: str, cmd: str, stderr: str = "") -> str:
-    detail = stderr.strip()
+    detail = (stderr or _last_stderr).strip()
     msg = f"{cmd} failed: {detail}" if detail else f"{cmd} failed without output"
     return json.dumps({"error": msg, "tool": tool})
 

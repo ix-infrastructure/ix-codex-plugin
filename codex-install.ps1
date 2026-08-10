@@ -198,12 +198,15 @@ if ($pythonCmd.Count -gt 1) {
 $pythonArgs += $installer
 $pythonArgs += $effectiveArgs
 
-# The same 5.1 stderr hazard, but this one cannot be captured: the Python
-# installer's output is the user-facing result of the whole command and has to
-# reach the console as it happens. So it gets the Continue window without the
-# capture, and $LASTEXITCODE still decides the outcome. Without this, a Python
-# that printed a single DeprecationWarning would abort here -- after the work was
-# already done -- and never reach the exit below.
+# This call is deliberately left uncaptured: the Python installer's output is the
+# user-facing result of the whole command and has to reach the console as it
+# happens, not be replayed afterwards.
+#
+# Which, per the measurements above, also means it is not exposed to the 5.1
+# hazard -- an uncaptured native command writing to stderr does not throw, so a
+# Python printing a DeprecationWarning would not have aborted here. The Continue
+# window stays as a guard for the stream this script does not control, and
+# because $LASTEXITCODE below is what decides the outcome either way.
 $prevEap = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 try {

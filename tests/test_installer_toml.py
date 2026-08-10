@@ -191,6 +191,60 @@ class InstallerTomlTest(unittest.TestCase):
             with self.subTest(label):
                 self.assertIsNone(self.installer.enable_codex_hooks(source))
 
+    def test_a_quoted_header_containing_brackets_ends_the_section(self) -> None:
+        """`[` and `]` are legal in a quoted key, and Codex writes real paths."""
+        source = (
+            "[features]\ncodex_hooks = false\n\n"
+            "[projects.'C:/repos/proj[old]']\ntrust_level = \"trusted\"\n"
+            'codex_hooks = "keep me"\n'
+        )
+        updated = self.installer.enable_codex_hooks(source)
+        assert updated is not None
+        parsed = tomllib.loads(updated)
+        self.assertIs(parsed["features"]["codex_hooks"], True)
+        self.assertEqual(
+            "keep me", parsed["projects"]["C:/repos/proj[old]"]["codex_hooks"]
+        )
+
+    def test_a_quoted_key_is_rewritten_not_duplicated(self) -> None:
+        """TOML reads `"codex_hooks"` and `codex_hooks` as the same key."""
+        for source in (
+            '[features]\n"codex_hooks" = false\n',
+            "[features]\n'codex_hooks' = false\n",
+        ):
+            with self.subTest(source):
+                updated = self.installer.enable_codex_hooks(source)
+                assert updated is not None
+                self.assertIs(tomllib.loads(updated)["features"]["codex_hooks"], True)
+                self.assertEqual(["codex_hooks = true"], _assignments_in_features(updated))
+
+    def test_an_uneditable_spelling_aborts_with_a_message_about_itself(self) -> None:
+        """Not "the result would not be valid TOML" — the input is fine."""
+        for source in (
+            "features = { codex_hooks = false }\n",
+            "features.codex_hooks = false\n",
+        ):
+            with self.subTest(source):
+                with self.assertRaises(SystemExit) as caught:
+                    self.installer.enable_codex_hooks(source)
+                self.assertIn("does not edit", str(caught.exception))
+
+    def test_without_a_toml_parser_it_declines_rather_than_guesses(self) -> None:
+        """On <3.11 with no tomli, appending [features] blind can corrupt."""
+        original = self.installer.tomllib
+        self.addCleanup(setattr, self.installer, "tomllib", original)
+        self.installer.tomllib = None
+
+        with self.assertRaises(SystemExit):
+            self.installer.enable_codex_hooks("features = { codex_hooks = true }\n")
+
+        # The forms it *can* read are still edited, and a fresh config still works.
+        for source in ("[features]\ncodex_hooks = false\n", ""):
+            with self.subTest(source):
+                updated = self.installer.enable_codex_hooks(source)
+                assert updated is not None
+                self.assertIs(tomllib.loads(updated)["features"]["codex_hooks"], True)
+
     def test_a_bom_does_not_hide_the_features_table(self) -> None:
         """PowerShell 5.1's Set-Content writes one by default."""
         with tempfile.TemporaryDirectory() as temp_dir:

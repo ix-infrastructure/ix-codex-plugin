@@ -15,9 +15,11 @@ this way rather than by mocking `subprocess.run`:
   * `--format json` is *requested* rather than assumed. `_parse` looks for the
     first `{` or `[` in the output, so against human-oriented text it would
     either fail or, worse, succeed on a fragment of a rendered table.
-  * arguments reach the CLI as argv, never a shell string. The unsafe symbol
-    below would create a marker file if anything in the chain grew a
-    `shell=True`.
+  * arguments reach the CLI as argv rather than as text a shell re-parses. That
+    property is platform-specific and is checked separately, in
+    test_shell_metacharacters_never_reach_a_shell — on Windows there is no
+    `ix.exe`, so the resolved `.CMD` runs via cmd.exe and the server refuses
+    metacharacters rather than passing them.
 
 Originally contributed by @Hiro-Chiba in #16; folded in here because #13
 changes the same call path.
@@ -28,6 +30,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import types
@@ -83,15 +86,17 @@ def _load_server(sdk: str):
     return module
 
 
-# (attribute, args, kwargs, expected argv). `ix_map` takes no --format because it
-# goes through _run rather than _json; `ix_health` probes --version and is here
-# because being the only correct tool is what hid the bug.
-UNSAFE_SYMBOL_SLOT = object()
+# (attribute, args, kwargs, expected argv). `ix_health` probes --version and is
+# here because being the only correct tool is what hid the bug.
 
 CASES: list[tuple[str, tuple, dict, list]] = [
     ("ix_health",      (),                  {},                                           ["--version"]),
     ("ix_briefing",    (),                  {},                                           ["briefing", "--format", "json"]),
-    ("ix_locate",      (UNSAFE_SYMBOL_SLOT,), {},                                         ["locate", UNSAFE_SYMBOL_SLOT, "--format", "json"]),
+    # A symbol with a space, which is enough to prove the argument survives as one
+    # argv element. Shell metacharacters are a separate matter and get their own
+    # test — folding them in here made the sweep depend on a payload that has to
+    # be space-free, which is not what these 23 cases are checking.
+    ("ix_locate",      ("User Service",),   {},                                           ["locate", "User Service", "--format", "json"]),
     ("ix_text",        ("needle",),         {"limit": 7, "path": "src", "language": "python"},
      ["text", "needle", "--limit", "7", "--path", "src", "--language", "python", "--format", "json"]),
     ("ix_impact",      ("Widget",),         {},                                           ["impact", "Widget", "--format", "json"]),
@@ -169,17 +174,8 @@ class McpCliInvocationTest(unittest.TestCase):
             marker_path = temp_path / "shell-was-invoked"
             _write_fake_ix(temp_path)
 
-            # If anything in the chain ever runs through a shell, the separator
-            # splits the command and the marker appears. cmd.exe does not treat
-            # `;` as one, so the payload has to differ per platform or the
-            # assertion is vacuous on Windows.
-            if os.name == "nt":
-                unsafe_symbol = f"Widget & echo x> {marker_path}"
-            else:
-                unsafe_symbol = f"Widget; touch {marker_path}"
-
             def resolve(value):
-                return unsafe_symbol if value is UNSAFE_SYMBOL_SLOT else value
+                return value
 
             environment = {
                 "FAKE_IX_LOG": str(log_path),
@@ -209,6 +205,64 @@ class McpCliInvocationTest(unittest.TestCase):
         self.assertEqual(expected, actual)
         self.assertFalse(marker.exists())
         self.assertTrue(all("error" not in json.loads(r) for r in results))
+
+    def test_shell_metacharacters_never_reach_a_shell(self) -> None:
+        """A space-free payload — the only kind that can reach one.
+
+        `subprocess` quotes an argument only when it contains whitespace, so
+        `Widget & touch x` is protected by that quoting and passes this check
+        whether or not a shell is in the chain. It has to be space-free to test
+        anything, which is why the control below runs first: if the payload
+        cannot fire even through an explicit shell, the assertion that follows
+        means nothing.
+
+        The two platforms are legitimately different. On POSIX the fake `ix` is
+        exec'd directly and the payload arrives verbatim as one argv element. On
+        Windows there is no `ix.exe` to exec — `shutil.which` finds a `.CMD`, and
+        CreateProcess runs those through `cmd.exe` — so the server refuses the
+        argument instead, and it must not reach the CLI at all.
+        """
+        server = _load_server("v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            log_path = temp_path / "argv.jsonl"
+            marker_path = temp_path / "shell-was-invoked"
+            self.assertNotIn(" ", str(marker_path), "payload must stay space-free")
+            _write_fake_ix(temp_path)
+            payload = f"Widget&echo>{marker_path}"
+            environment = {
+                "FAKE_IX_LOG": str(log_path),
+                "PATH": f"{temp_path}{os.pathsep}{os.environ.get('PATH', '')}",
+            }
+
+            # Positive control: through an actual shell, this payload fires.
+            with patch.dict(os.environ, environment):
+                subprocess.run(f"ix locate {payload}", shell=True, capture_output=True)
+            self.assertTrue(
+                marker_path.exists(),
+                "control failed: the payload cannot fire even via a shell, so the "
+                "assertion below would pass for the wrong reason",
+            )
+            # The control's own split command reached the fake ix and logged a
+            # truncated argv; clear both so the real call is measured alone.
+            marker_path.unlink()
+            log_path.unlink(missing_ok=True)
+
+            with patch.dict(os.environ, environment):
+                result = json.loads(server.ix_locate(payload))
+
+            self.assertFalse(marker_path.exists(), "the payload reached a shell")
+            logged = (
+                [json.loads(x) for x in log_path.read_text().splitlines()]
+                if log_path.exists()
+                else []
+            )
+            if os.name == "nt":
+                self.assertIn("error", result)
+                self.assertIn("refusing to run", result["error"])
+                self.assertEqual([], logged, "the argument must not reach the CLI")
+            else:
+                self.assertEqual([["locate", payload, "--format", "json"]], logged)
 
     def test_every_registered_tool_is_covered(self) -> None:
         """A tool added without a case here would otherwise go untested silently."""
