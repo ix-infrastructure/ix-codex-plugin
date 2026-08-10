@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import functools
 import hashlib
 import json
 import os
@@ -137,12 +138,40 @@ def find_workspace_root(cwd: str | None) -> Path:
     return start
 
 
+def resolve_ix_argv(argv: list[str]) -> list[str]:
+    """Replace a leading bare `ix` with the resolved path to the executable.
+
+    On Windows the installer puts an `ix.CMD` shim on PATH. `subprocess` there
+    hands the command to CreateProcess, which — unlike the shell — does not
+    consult PATHEXT, so a bare "ix" matches no file on disk and every call dies
+    with `FileNotFoundError: [WinError 2]`. The same command typed into
+    PowerShell works, and `shutil.which("ix")` finds `ix.CMD` quite happily,
+    which is what made this look like the CLI was fine and only the hooks were
+    broken.
+
+    `shutil.which` DOES apply PATHEXT, so resolving through it and passing the
+    full path is the fix. POSIX is unaffected: `which` returns the same path the
+    kernel would have found anyway.
+
+    Falls back to the bare name when `ix` is not installed, so the caller still
+    gets the ordinary "not found" error rather than a confusing one from here.
+    """
+    if not argv or argv[0] != "ix":
+        return argv
+    return [_ix_executable(), *argv[1:]]
+
+
+@functools.lru_cache(maxsize=1)
+def _ix_executable() -> str:
+    return shutil.which("ix") or "ix"
+
+
 def run_command(
     argv: list[str], cwd: str | Path | None = None, timeout: int = 10
 ) -> subprocess.CompletedProcess[str] | None:
     try:
         return subprocess.run(
-            argv,
+            resolve_ix_argv(argv),
             cwd=str(cwd) if cwd else None,
             capture_output=True,
             text=True,
@@ -654,7 +683,7 @@ def build_write_warning(file_path: str, cwd: str | Path | None) -> str | None:
 def spawn_background_ix_ingest(file_path: str | Path, cwd: str | Path | None) -> None:
     """Fire-and-forget ix map on a single file path."""
     subprocess.Popen(
-        ["ix", "map", str(file_path)],
+        resolve_ix_argv(["ix", "map", str(file_path)]),
         cwd=str(cwd) if cwd else None,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -664,7 +693,7 @@ def spawn_background_ix_ingest(file_path: str | Path, cwd: str | Path | None) ->
 
 def spawn_background_ix_map(cwd: str | Path | None) -> None:
     subprocess.Popen(
-        ["ix", "map"],
+        resolve_ix_argv(["ix", "map"]),
         cwd=str(cwd) if cwd else None,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

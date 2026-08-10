@@ -61,6 +61,10 @@ python3 -m py_compile \
   "$REPO/mcp/server.py" >/dev/null \
   && ok "Python files compile" || fail "Python compile failed"
 
+python3 "$REPO/tests/test_ix_argv_resolution.py" >/dev/null 2>&1 \
+  && ok "ix invocations resolve through PATHEXT (Windows)" \
+  || fail "ix argv resolution tests failed"
+
 echo ""
 echo "-- hooks.json event coverage --"
 
