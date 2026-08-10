@@ -20,8 +20,8 @@ def main() -> None:
     workspace_root = find_workspace_root(event.get("cwd"))
     if not ix_healthy(workspace_root):
         return
-    # briefing_due() before ix_pro_available(), not after: the first is a local
-    # file read and the second now runs a real `ix briefing`. In the other order
+    # briefing_due() before the Pro probe, not after: the first is a local file
+    # read and the second now runs a real `ix briefing`. In the other order
     # the costliest command in the CLI runs on the UserPromptSubmit critical path
     # and is then thrown away, because the very next line decides there is
     # nothing to say. Harmless when the probe was `ix briefing --help`; not now.

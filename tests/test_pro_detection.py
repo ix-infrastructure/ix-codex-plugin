@@ -170,9 +170,16 @@ class ProDetectionTest(unittest.TestCase):
         # Still inside the backoff: answered from cache, no second probe.
         self.assertFalse(self._run_probe(_completed(0, stdout="{}")))
         self._age_cache(self.common.PRO_PROBE_BACKOFF_SECONDS + 1)
-        # ...and past it, the real answer lands. The backoff is a tenth of
-        # BRIEFING_TTL_SECONDS, so it cannot delay a briefing that was due.
+        # ...and past it, the real answer lands.
         self.assertTrue(self._run_probe(_completed(0, stdout='{"revision": 42}')))
+
+    def test_the_backoff_cannot_outlast_the_briefing_interval(self) -> None:
+        """Suppressing the probe is only acceptable while it delays nothing.
+
+        Constants, not behaviour — this exists so that raising the backoff to
+        something that could swallow a due briefing fails here rather than
+        showing up as briefings quietly going missing.
+        """
         self.assertLess(
             self.common.PRO_PROBE_BACKOFF_SECONDS, self.common.BRIEFING_TTL_SECONDS
         )

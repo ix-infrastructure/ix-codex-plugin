@@ -70,6 +70,15 @@ else
   printf '%s\n' "$pro_out" | sed 's/^/      /'
 fi
 
+# The probe is now a real `ix briefing`, so how often the hook reaches it is
+# part of the contract; common.py alone cannot show that.
+if ups_out=$(python3 "$REPO/tests/test_user_prompt_submit.py" 2>&1); then
+  ok "UserPromptSubmit runs at most one briefing per prompt"
+else
+  fail "user_prompt_submit tests failed"
+  printf '%s\n' "$ups_out" | sed 's/^/      /'
+fi
+
 echo ""
 echo "-- hooks.json event coverage --"
 

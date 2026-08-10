@@ -279,7 +279,7 @@ def probe_pro(cwd: str | Path | None) -> tuple[bool, str | None]:
     if PRO_CACHE_PATH.exists():
         try:
             cached = json.loads(PRO_CACHE_PATH.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
             cached = None
         if isinstance(cached, dict):
             try:
