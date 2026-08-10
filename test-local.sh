@@ -131,49 +131,13 @@ else:
 # Registering tools says nothing about whether they can run. Every tool but
 # ix_health used to omit the `ix` executable and try to exec a program named
 # after the subcommand, and _json parsed stdout as JSON without ever asking for
-# it. Both are invisible to a count, so this runs the tools against a stub `ix`
-# on PATH that reports the argv it was handed.
-MCP_SHIM="$(mktemp -d)"
-cat > "$MCP_SHIM/ix" <<'SHIM'
-#!/usr/bin/env python3
-import json, sys
-print(json.dumps({"argv": sys.argv[1:]}))
-SHIM
-chmod +x "$MCP_SHIM/ix"
-PATH="$MCP_SHIM:$PATH" python3 -c "
-import importlib.util, json, sys
-spec = importlib.util.spec_from_file_location('mcp_server', '$REPO/mcp/server.py')
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
+# it. Both are invisible to a count, so tests/ drives all 23 tools against a
+# stub `ix` on PATH that reports the argv it was handed, under both MCP SDK
+# major versions.
+python3 "$REPO/tests/test_mcp_cli_invocation.py" >/dev/null 2>&1 \
+  && ok "MCP tools invoke the ix CLI and request JSON" \
+  || fail "MCP tool invocation check failed"
 
-failed = False
-# (callable, expected leading argv). Covers a bare query, one with flags, and
-# the health probe -- health because it was the only correct one and so the only
-# one a smoke test would have caught.
-cases = [
-    (lambda: mod.ix_stats(),                      ['stats', '--format', 'json']),
-    (lambda: mod.ix_locate('UserService'),        ['locate', 'UserService', '--format', 'json']),
-    (lambda: mod.ix_depends('verify_token', 2),   ['depends', 'verify_token', '--depth', '2', '--format', 'json']),
-    (lambda: mod.ix_inventory('auth.py', 'function'), ['inventory', '--kind', 'function', '--path', 'auth.py', '--format', 'json']),
-]
-for fn, expected in cases:
-    out = json.loads(fn())
-    argv = out.get('argv')
-    if argv != expected:
-        print(f'  [FAIL] MCP tool built {argv!r}, expected {expected!r}')
-        failed = True
-
-# ix_health goes through _run and takes no --format; it must still reach the CLI.
-health = json.loads(mod.ix_health())
-if 'error' in health:
-    print(f'  [FAIL] ix_health did not reach the ix CLI: {health}')
-    failed = True
-
-if failed:
-    sys.exit(1)
-print('  [ok] MCP tools invoke the ix CLI and request JSON')
-" && true || fail "MCP tool invocation check failed"
-rm -rf "$MCP_SHIM"
 
 echo ""
 echo "-- hook installer TOML checks --"
@@ -181,53 +145,10 @@ echo "-- hook installer TOML checks --"
 # ensure_codex_hooks_enabled used to append a second `codex_hooks` assignment to
 # an existing [features] table, producing a duplicate key that no TOML parser
 # accepts -- and exiting 0 while doing it. The installer's output has to stay
-# loadable, so every case here ends in a real parse.
-python3 -c "
-import importlib.util, sys, tomllib
-spec = importlib.util.spec_from_file_location('inst', '$REPO/scripts/install_codex_integration.py')
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-
-PROJECTS = '[projects.\"/tmp/example\"]\ntrust_level = \"trusted\"\n'
-cases = [
-    ('existing false',            '[features]\ncodex_hooks = false\n\n' + PROJECTS),
-    ('commented-out decoy',       '[features]\n# codex_hooks = true\n'),
-    ('no spaces around =',        '[features]\ncodex_hooks=false\n'),
-    ('no [features] table',       PROJECTS),
-    ('empty [features]',          '[features]\n\n' + PROJECTS),
-    # A config the *old* installer already corrupted. Refusing to touch it would
-    # leave the user hand-editing TOML to run an installer.
-    ('duplicate key from old bug','[features]\ncodex_hooks = false\n\ncodex_hooks = true\n' + PROJECTS),
-    # codex_hooks under some other table is a different key and must not count.
-    ('key in another table',      '[other]\ncodex_hooks = true\n\n[features]\nsomething = 1\n'),
-]
-
-failed = False
-for name, src in cases:
-    out = mod.enable_codex_hooks(src)
-    if out is None:
-        print(f'  [FAIL] {name}: reported nothing to do')
-        failed = True
-        continue
-    try:
-        parsed = tomllib.loads(out)
-    except tomllib.TOMLDecodeError as exc:
-        print(f'  [FAIL] {name}: produced invalid TOML ({exc})')
-        failed = True
-        continue
-    if parsed.get('features', {}).get('codex_hooks') is not True:
-        print(f'  [FAIL] {name}: codex_hooks is {parsed.get(\"features\", {}).get(\"codex_hooks\")!r}')
-        failed = True
-
-# Already correct: must be left completely alone, not rewritten.
-if mod.enable_codex_hooks('[features]\ncodex_hooks = true\n') is not None:
-    print('  [FAIL] rewrote a config that was already correct')
-    failed = True
-
-if failed:
-    sys.exit(1)
-print(f'  [ok] hook installer keeps config.toml valid across {len(cases) + 1} cases')
-" && true || fail "hook installer TOML check failed"
+# loadable, so every case in tests/ ends in a real parse.
+python3 "$REPO/tests/test_installer_toml.py" >/dev/null 2>&1 \
+  && ok "hook installer keeps config.toml valid" \
+  || fail "hook installer TOML check failed"
 
 echo ""
 echo "-- _scrub_secrets unit tests --"
