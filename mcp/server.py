@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ix-memory MCP server — stdio transport, Python FastMCP.
+"""ix-memory MCP server — stdio transport, MCP Python SDK.
 
 23 tools mirroring the Cursor plugin tool set.  All tools call the ix CLI
 directly (same fallback strategy as the other hooks).  Future work will
@@ -14,23 +14,160 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 from typing import Optional
 
-from mcp.server.fastmcp import FastMCP
+# The MCP Python SDK renamed FastMCP to MCPServer in 2.0.0 and moved it from
+# mcp.server.fastmcp to mcp.server.mcpserver. Nothing in this repo installs or
+# pins the SDK — the installer copies this file and prints a `codex mcp add`
+# line — so whichever version pip last resolved is what this has to run on, and
+# both lines are in the wild. On a fresh `pip install mcp` the v1 import raises
+# ModuleNotFoundError, and all Codex surfaces is that the ix-memory client
+# "failed to start".
+#
+# Only the constructor moved. Everything below is unchanged across the two:
+# @mcp.tool() keeps its name and signature, the tools stay plain functions
+# returning str, and run(transport="stdio") is the same call. None of them use
+# the get_context() that v2 removed, so there is nothing to adapt per tool.
+try:  # mcp >= 2.0.0
+    from mcp.server.mcpserver import MCPServer as _Server
+except ImportError:  # mcp < 2.0.0
+    try:
+        from mcp.server.fastmcp import FastMCP as _Server
+    except ImportError as exc:  # the SDK is missing outright, not merely older
+        raise SystemExit(
+            "ix-memory MCP server requires the MCP Python SDK, which is not "
+            "installed for this interpreter.\n"
+            "  pip install mcp"
+        ) from exc
 
-mcp = FastMCP("ix-memory")
+mcp = _Server("ix-memory")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+# Resolving the executable is necessary on Windows (see _run) but it is not free:
+# npm ships no `ix.exe`, so shutil.which returns `ix.CMD`, and CreateProcess runs
+# a .cmd/.bat by handing the command line to `cmd.exe /c`. Every argument is then
+# parsed by a shell before the CLI sees it -- and subprocess only quotes
+# arguments containing whitespace, so `Widget&whoami` splits into two commands
+# while `Widget & whoami` does not. `%VAR%` is expanded either way, and a literal
+# `"` escapes the quoting that protects the rest.
+#
+# These arguments come from tool calls the model makes, so the content is not
+# trusted. Quoting correctly for cmd.exe is a well-known trap -- it is what
+# CVE-2024-24576 was -- so this refuses the input instead of trying to escape it.
+# The cost is that a symbol named with one of these cannot be queried on Windows,
+# which beats running it.
+_CMD_SHIM_SUFFIXES = (".cmd", ".bat")
+# `!` is here for shims that enable delayed expansion: it cannot split a command
+# (expansion happens after tokenisation) but it does substitute an environment
+# value into the query, which is the same disclosure `%VAR%` gives.
+_CMD_METACHARACTERS = frozenset('&|<>^"%!\r\n')
+
+
+def _unsafe_for_cmd_shim(executable: str, args: list[str]) -> str:
+    """The cmd.exe metacharacters in `args`, if this executable routes through one."""
+    if not executable.lower().endswith(_CMD_SHIM_SUFFIXES):
+        return ""
+    found: set[str] = set()
+    # The executable too: list2cmdline leaves an unquoted path alone, so an `ix`
+    # installed under `C:\Users\a&b\` splits at the `&`. Not attacker-controlled,
+    # but it fails silently and is one line to catch.
+    for arg in (executable, *args):
+        found |= set(arg) & _CMD_METACHARACTERS
+    return " ".join(repr(c) for c in sorted(found))
+
+
+# Why the reason a call failed is stashed rather than returned: _json hands its
+# 21 callers bare data, so stderr had nowhere to go and every failure read
+# "failed without output" -- including "ix CLI not found" and the refusal above,
+# the two a user most needs to see. Threading a second value through 21 call
+# sites is the tidier fix and a much larger diff; this is the small one.
+#
+# It is thread-local and written by *every* _run, including the early returns.
+# A module-level string would be wrong twice over: mcp >= 2.0.0 dispatches each
+# message with anyio.to_thread.run_sync, so two tools really can be in flight at
+# once; and even single-threaded, ix_map and ix_health call _run directly, so a
+# stale value from an earlier tool's _json would be reported under theirs --
+# which for ix_read means one tool's file content surfacing in another's error.
+_call_state = threading.local()
+
+
+def _record_stderr(stderr: str) -> None:
+    _call_state.stderr = stderr
+
+
+def _recorded_stderr() -> str:
+    return getattr(_call_state, "stderr", "")
+
+
 def _run(args: list[str], timeout: int = 15) -> tuple[bool, str, str]:
+    """Run `ix` with the given subcommand and flags.
+
+    The executable is prepended here rather than written out at each of the 23
+    tools, because that is exactly what went wrong: every tool but ix_health
+    passed only the subcommand, so Python tried to execute programs named
+    `stats`, `locate` and `map`. One tool spelling it correctly is what let the
+    server look alive while nothing else in it worked.
+
+    It is resolved with shutil.which rather than passed as the bare string "ix".
+    On Windows the installed CLI is `ix.CMD`, and CreateProcess does not consult
+    PATHEXT the way the shell does -- `subprocess.run(["ix", ...])` raises
+    FileNotFoundError there however well-formed the rest of the argv is. Getting
+    the argv right and still naming the executable in a way Windows cannot
+    resolve would have left all 23 tools returning an error on the platform this
+    is meant to fix.
+    """
+    # shutil.which searches the *current directory first* on Windows unless
+    # NoDefaultCurrentDirectoryInExePath is set, which it is not by default -- so
+    # a repository shipping an `ix.bat` at its root would own this server
+    # outright, no metacharacters required. Passing `path=` does NOT prevent it:
+    # CPython inserts os.curdir whenever the command has no directory part,
+    # explicit path or not (verified on 3.13 -- it still returns `.\ix.BAT`).
+    #
+    # What does prevent it is refusing the result: a PATH hit is absolute, the
+    # curdir hit is not.
+    executable = shutil.which("ix", path=os.environ.get("PATH"))
+    if executable is not None and not os.path.isabs(executable):
+        _record_stderr(
+            msg := (
+                f"refusing to run {executable!r}: resolved from the working "
+                "directory rather than PATH. Remove it, or put the real ix ahead "
+                "of it on PATH."
+            )
+        )
+        return False, "", msg
+    if executable is None:
+        _record_stderr(msg := "ix CLI not found. Install it and ensure it is on PATH.")
+        return False, "", msg
+    unsafe = _unsafe_for_cmd_shim(executable, args)
+    if unsafe:
+        _record_stderr(
+            msg := (
+                f"refusing to run `ix {args[0] if args else ''}`: an argument "
+                f"contains {unsafe}, which the Windows command processor would act "
+                "on rather than pass to the CLI. Re-run without those characters "
+                "-- for a symbol, name it without them; for a search, simplify the "
+                "pattern."
+            )
+        )
+        return False, "", msg
     try:
         r = subprocess.run(
-            args, capture_output=True, text=True, timeout=timeout, check=False
+            [executable, *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
         )
+        _record_stderr(r.stderr)
         return r.returncode == 0, r.stdout, r.stderr
-    except (OSError, subprocess.SubprocessError) as exc:
-        return False, "", str(exc)
+    # ValueError too: an embedded NUL raises it out of subprocess on every
+    # platform, and it is not an OSError.
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        _record_stderr(detail := str(exc))
+        return False, "", detail
 
 
 def _parse(text: str) -> object:
@@ -45,7 +182,16 @@ def _parse(text: str) -> object:
 
 
 def _json(args: list[str], timeout: int = 15) -> object:
-    ok, stdout, _ = _run(args, timeout)
+    """Run an ix query and parse its output as JSON.
+
+    `--format json` is requested rather than assumed. This parsed stdout as JSON
+    while asking for nothing, so it was reading the human-oriented text output --
+    _parse would find the first `{` or `[` in a rendered table and either fail or,
+    worse, succeed on a fragment. Every subcommand reached from here accepts the
+    flag; the ones that do not take --format at all (config, init, reset, upgrade,
+    view, watch) are not exposed as tools.
+    """
+    ok, stdout, _ = _run([*args, "--format", "json"], timeout)
     return _parse(stdout) if ok else None
 
 
@@ -54,7 +200,7 @@ def _ok(data: object) -> str:
 
 
 def _err(tool: str, cmd: str, stderr: str = "") -> str:
-    detail = stderr.strip()
+    detail = (stderr or _recorded_stderr()).strip()
     msg = f"{cmd} failed: {detail}" if detail else f"{cmd} failed without output"
     return json.dumps({"error": msg, "tool": tool})
 
@@ -66,7 +212,9 @@ def ix_health() -> str:
     """Check whether the ix CLI is available and the graph is ready."""
     if not shutil.which("ix"):
         return json.dumps({"error": "ix CLI not found. Install it and ensure it is on PATH.", "graph_ready": False})
-    ok, stdout, stderr = _run(["ix", "--version"], timeout=5)
+    # No "ix" here any more: _run prepends it. This tool was the only one that
+    # passed it, which is why it was the only one that worked.
+    ok, stdout, stderr = _run(["--version"], timeout=5)
     if not ok:
         return json.dumps({"error": f"ix health probe failed: {stderr.strip()}", "graph_ready": False})
     version = stdout.strip().split()[0] if stdout.strip() else "unknown"
@@ -122,7 +270,12 @@ def ix_impact(target: str) -> str:
 @mcp.tool()
 def ix_map(file: Optional[str] = None) -> str:
     """Ingest a file into the graph (ix map <file>) or run a full architecture map (ix map)."""
-    args = ["map", file] if file else ["map"]
+    # --format json like every other tool. Without it this asked for the rendered
+    # view -- which for `map` is explicitly truncated (--max-items defaults to 10)
+    # -- and then ran _parse over the ASCII art, so it reliably fell through to
+    # {"raw": ...} and handed the model unstructured, silently partial text. It
+    # was the last tool still doing what #14 was filed about.
+    args = ["map", file, "--format", "json"] if file else ["map", "--format", "json"]
     ok, stdout, stderr = _run(args, timeout=60)
     if not ok:
         return _err("ix_map", f"ix map{' ' + file if file else ''}", stderr)
