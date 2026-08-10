@@ -282,6 +282,14 @@ def _consume_line(line: str, open_delimiter: str | None) -> tuple[str | None, in
     index = 0
     while index < len(line):
         if open_delimiter is not None:
+            # A multi-line *basic* string honours escapes, so `\""" ` does not
+            # close it; a literal ''' string has none. Missing that ended the
+            # string early, and the flag was then written into whichever table
+            # the scanner thought it was in -- valid TOML, so the output check
+            # cannot catch it.
+            if open_delimiter == '"""' and line[index] == "\\":
+                index += 2
+                continue
             if line.startswith(open_delimiter, index):
                 index += 3
                 open_delimiter = None
@@ -367,10 +375,18 @@ _ASSIGNS_FEATURES_RE = re.compile(r"""^\s*(?:features|"features"|'features')\s*[
 
 def _assigns_features_directly(text: str) -> bool:
     lines = text.splitlines()
-    return any(
-        at_top_level and _ASSIGNS_FEATURES_RE.match(line)
-        for _index, line, at_top_level in _top_level_lines(lines)
-    )
+    for _index, line, at_top_level in _top_level_lines(lines):
+        if not at_top_level:
+            continue
+        if _ASSIGNS_FEATURES_RE.match(line):
+            return True
+        # `[[features]]` counts too: an array-of-tables is not a table this can
+        # append a `[features]` beside, and letting it fall through produced the
+        # "would not be valid TOML" message that this branch exists to replace.
+        header = _TABLE_RE.match(line)
+        if header and header.group(1) == "[[" and _is_features_table(header.group(2)):
+            return True
+    return False
 
 
 def enable_codex_hooks(text: str) -> str | None:

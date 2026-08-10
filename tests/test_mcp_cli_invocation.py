@@ -146,7 +146,7 @@ else:
 FAILING_IX = """#!/usr/bin/env python3
 import sys
 
-sys.stderr.write("graph not ingested; run ix init\n")
+sys.stderr.write("graph not ingested; run ix init\\n")
 sys.exit(2)
 """
 
@@ -304,17 +304,22 @@ class McpCliInvocationTest(unittest.TestCase):
                     "FAKE_IX_LOG": str(temp_path / "argv.jsonl"),
                     "PATH": f"{temp_path}{os.pathsep}{os.environ.get('PATH', '')}",
                 }
-                # Run from the temp directory: if the guard ever breaks, the `>`
-                # case redirects into the working directory, and a test that
-                # litters the repo with a file called `x` when it fails is how
-                # that file ends up committed.
-                cwd = os.getcwd()
-                os.chdir(temp_path)
-                try:
-                    with patch.dict(os.environ, environment):
-                        result = json.loads(server.ix_locate(f"Widget{char}x"))
-                finally:
-                    os.chdir(cwd)
+                # Run from a scratch directory so the `>` case redirects there
+                # rather than into the repo if the guard ever breaks -- that is
+                # how a file called `x` once got committed. It must NOT be the
+                # directory holding the fake ix: shutil.which searches the
+                # working directory first on Windows, the resolved path would
+                # then be relative, and the isabs refusal would answer before
+                # the metacharacter check ever ran -- leaving this green for a
+                # reason that has nothing to do with the character under test.
+                with tempfile.TemporaryDirectory() as elsewhere:
+                    cwd = os.getcwd()
+                    os.chdir(elsewhere)
+                    try:
+                        with patch.dict(os.environ, environment):
+                            result = json.loads(server.ix_locate(f"Widget{char}x"))
+                    finally:
+                        os.chdir(cwd)
                 self.assertIn("refusing to run", result.get("error", ""))
                 self.assertIn(repr(char), result["error"])
 
@@ -350,6 +355,9 @@ class McpCliInvocationTest(unittest.TestCase):
                 result = json.loads(server.ix_locate("Widget"))
             self.assertIn("refusing to run", result.get("error", ""))
 
+    @unittest.skipUnless(
+        os.name == "nt", "CPython only inserts os.curdir into the search on Windows"
+    )
     def test_a_working_directory_ix_is_not_executed(self) -> None:
         """shutil.which prefers the CWD on Windows, `path=` notwithstanding."""
         server = _load_server("v1")
