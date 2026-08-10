@@ -53,10 +53,25 @@ def _run(args: list[str], timeout: int = 15) -> tuple[bool, str, str]:
     passed only the subcommand, so Python tried to execute programs named
     `stats`, `locate` and `map`. One tool spelling it correctly is what let the
     server look alive while nothing else in it worked.
+
+    It is resolved with shutil.which rather than passed as the bare string "ix".
+    On Windows the installed CLI is `ix.CMD`, and CreateProcess does not consult
+    PATHEXT the way the shell does -- `subprocess.run(["ix", ...])` raises
+    FileNotFoundError there however well-formed the rest of the argv is. Getting
+    the argv right and still naming the executable in a way Windows cannot
+    resolve would have left all 23 tools returning an error on the platform this
+    is meant to fix.
     """
+    executable = shutil.which("ix")
+    if executable is None:
+        return False, "", "ix CLI not found. Install it and ensure it is on PATH."
     try:
         r = subprocess.run(
-            ["ix", *args], capture_output=True, text=True, timeout=timeout, check=False
+            [executable, *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
         )
         return r.returncode == 0, r.stdout, r.stderr
     except (OSError, subprocess.SubprocessError) as exc:
@@ -163,7 +178,12 @@ def ix_impact(target: str) -> str:
 @mcp.tool()
 def ix_map(file: Optional[str] = None) -> str:
     """Ingest a file into the graph (ix map <file>) or run a full architecture map (ix map)."""
-    args = ["map", file] if file else ["map"]
+    # --format json like every other tool. Without it this asked for the rendered
+    # view -- which for `map` is explicitly truncated (--max-items defaults to 10)
+    # -- and then ran _parse over the ASCII art, so it reliably fell through to
+    # {"raw": ...} and handed the model unstructured, silently partial text. It
+    # was the last tool still doing what #14 was filed about.
+    args = ["map", file, "--format", "json"] if file else ["map", "--format", "json"]
     ok, stdout, stderr = _run(args, timeout=60)
     if not ok:
         return _err("ix_map", f"ix map{' ' + file if file else ''}", stderr)

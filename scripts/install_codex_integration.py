@@ -233,7 +233,13 @@ def update_marketplace(
     write_json(marketplace_path, payload)
 
 
-_TABLE_RE = re.compile(r"^\s*\[([^\]]*)\]\s*$")
+# Both bracket forms. `[[x]]` is an array-of-tables header, not a table named
+# "[x": matching only `[x]` left it unrecognised, so it did not end the preceding
+# section and every line under it was still attributed to [features]. A
+# `codex_hooks` key inside one was then collapsed as a duplicate and deleted --
+# silently, and the result still parses, so the tomllib guard below cannot catch
+# it. That is worse in kind than the corruption this function exists to fix.
+_TABLE_RE = re.compile(r"^\s*(\[\[?)\s*([^\[\]]*?)\s*\]\]?\s*$")
 _CODEX_HOOKS_RE = re.compile(r"^(\s*)codex_hooks\s*=")
 
 
@@ -257,6 +263,24 @@ def enable_codex_hooks(text: str) -> str | None:
     already has a broken file, and refusing to touch it would leave them to hand-
     edit TOML to run an installer.
     """
+    # Ask the parser before reaching for the line rewriter. TOML can spell this
+    # flag several ways the rewriter below does not read -- an inline table
+    # (`features = { codex_hooks = true }`), a dotted key
+    # (`features.codex_hooks = true`), a quoted key or header -- and for each of
+    # them the rewriter concludes there is no [features] table, appends one, and
+    # produces a duplicate declaration. On a config that was already valid and
+    # already enabled, that turns a no-op into an abort telling the user to
+    # hand-edit TOML. Corrupt input deliberately falls through: repairing it is
+    # the reason this function exists.
+    if tomllib is not None:
+        try:
+            features = tomllib.loads(text).get("features")
+        except tomllib.TOMLDecodeError:
+            pass
+        else:
+            if isinstance(features, dict) and features.get("codex_hooks") is True:
+                return None
+
     lines = text.splitlines()
     table: str | None = None
     key_lines: list[int] = []
@@ -267,7 +291,9 @@ def enable_codex_hooks(text: str) -> str | None:
         if header:
             if table == "features":
                 features_end = index
-            table = header.group(1).strip()
+            # `[[features]]` is an array-of-tables and a different construct from
+            # the `[features]` table, so only the single-bracket form counts.
+            table = header.group(2) if header.group(1) == "[" else None
             continue
         if table == "features" and not _is_comment(line) and _CODEX_HOOKS_RE.match(line):
             key_lines.append(index)
@@ -304,7 +330,14 @@ def ensure_codex_hooks_enabled(config_path: Path) -> None:
         install_file(source_codex_dir() / "config.toml", config_path, "copy", force=False)
         return
 
-    updated = enable_codex_hooks(config_path.read_text())
+    # utf-8-sig, not the locale codec. TOML is defined as UTF-8, but read_text()
+    # with no encoding uses the ANSI codepage on Windows (cp1252 here), so a
+    # non-Latin-1 path in a [projects."..."] header raised UnicodeDecodeError.
+    # -sig additionally strips the BOM that PowerShell 5.1's Set-Content writes
+    # by default; left in place it hides the first [features] header from the
+    # line scan below, which then appends a second one and aborts on the
+    # duplicate.
+    updated = enable_codex_hooks(config_path.read_text(encoding="utf-8-sig"))
     if updated is None:
         return
 
@@ -322,7 +355,7 @@ def ensure_codex_hooks_enabled(config_path: Path) -> None:
             ) from exc
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(updated)
+    config_path.write_text(updated, encoding="utf-8")
 
 
 def _source_git_commit() -> str | None:

@@ -95,7 +95,9 @@ CASES: list[tuple[str, tuple, dict, list]] = [
     ("ix_text",        ("needle",),         {"limit": 7, "path": "src", "language": "python"},
      ["text", "needle", "--limit", "7", "--path", "src", "--language", "python", "--format", "json"]),
     ("ix_impact",      ("Widget",),         {},                                           ["impact", "Widget", "--format", "json"]),
-    ("ix_map",         (),                  {},                                           ["map"]),
+    # Was pinned as bare ["map"] — locking in the one tool still parsing rendered
+    # text as JSON, which is the defect the rest of this file exists to catch.
+    ("ix_map",         (),                  {},                                           ["map", "--format", "json"]),
     ("ix_overview",    ("Widget",),         {},                                           ["overview", "Widget", "--format", "json"]),
     ("ix_read",        ("Widget",),         {},                                           ["read", "Widget", "--format", "json"]),
     ("ix_diff",        (3, 8),              {"target": "Widget", "summary": True},
@@ -135,6 +137,28 @@ else:
 """
 
 
+def _write_fake_ix(directory: Path) -> None:
+    """Put a fake `ix` on PATH that this platform can actually execute.
+
+    A bare `ix` carrying a `#!` line works only on POSIX. Windows cannot exec a
+    shebang script at all, so the stub never ran, nothing was ever logged, and
+    both argv tests died reading a file that was never created — on the one PR
+    whose subject is making this work on Windows. `.bat` is in the default
+    PATHEXT, so `shutil.which("ix")` (what the server uses to resolve it) finds
+    this and hands off to the interpreter running the tests.
+    """
+    if os.name == "nt":
+        impl = directory / "ix_impl.py"
+        impl.write_text(FAKE_IX, encoding="utf-8")
+        (directory / "ix.bat").write_text(
+            f'@echo off\r\n"{sys.executable}" "{impl}" %*\r\n', encoding="utf-8"
+        )
+        return
+    fake_ix = directory / "ix"
+    fake_ix.write_text(FAKE_IX, encoding="utf-8")
+    fake_ix.chmod(0o755)
+
+
 class McpCliInvocationTest(unittest.TestCase):
     def _drive_all_tools(self, sdk: str):
         server = _load_server(sdk)
@@ -143,13 +167,16 @@ class McpCliInvocationTest(unittest.TestCase):
             temp_path = Path(temp_dir)
             log_path = temp_path / "argv.jsonl"
             marker_path = temp_path / "shell-was-invoked"
-            fake_ix = temp_path / "ix"
-            fake_ix.write_text(FAKE_IX, encoding="utf-8")
-            fake_ix.chmod(0o755)
+            _write_fake_ix(temp_path)
 
-            # If anything in the chain ever runs through a shell, the `;` splits
-            # and the marker appears.
-            unsafe_symbol = f"Widget; touch {marker_path}"
+            # If anything in the chain ever runs through a shell, the separator
+            # splits the command and the marker appears. cmd.exe does not treat
+            # `;` as one, so the payload has to differ per platform or the
+            # assertion is vacuous on Windows.
+            if os.name == "nt":
+                unsafe_symbol = f"Widget & echo x> {marker_path}"
+            else:
+                unsafe_symbol = f"Widget; touch {marker_path}"
 
             def resolve(value):
                 return unsafe_symbol if value is UNSAFE_SYMBOL_SLOT else value

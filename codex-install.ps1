@@ -49,25 +49,32 @@ function Require-Command($name) {
 
 # Run a native command without letting its stderr abort the install.
 #
-# Windows PowerShell 5.1 turns everything a native command writes to stderr into
-# an ErrorRecord, and the $ErrorActionPreference = "Stop" above makes that
-# terminating. git writes ordinary progress there on success -- "From
-# https://github.com/..." after a fetch, "Cloning into '...'" after a clone --
-# so the installer aborted with NativeCommandError on commands that had actually
-# worked, and told the user nothing except a line number. PowerShell 7 stopped
-# treating native stderr as errors, which is why this only ever reproduced for
-# some people.
+# The precise trigger matters, because it is narrower than "5.1 treats native
+# stderr as an error". Measured on 5.1.26100, with $ErrorActionPreference =
+# "Stop", against a command that writes to stderr and exits 0:
 #
-# So: drop to Continue for the duration of the call, and flatten the merged
-# streams to plain strings, which is what stops an ErrorRecord surviving as an
-# error rather than as text. Then decide on $LASTEXITCODE, which is the only
-# thing that actually reports whether the command succeeded. ForEach-Object
-# rather than Select-Object here on purpose -- -First halts the native command
-# with StopUpstreamCommandsException and loses the exit code with it.
+#     cmd /c "echo x 1>&2"                      -> no throw
+#     $v = cmd /c "echo x 1>&2"                 -> no throw
+#     $v = cmd /c "echo x 1>&2" 2>$null         -> THROWS RemoteException
+#     $v = cmd /c "echo x 1>&2" 2>&1            -> THROWS RemoteException
+#     cmd /c "echo x 1>&2" 2>&1 | Out-Null      -> THROWS RemoteException
 #
-# These calls previously had no exit-code check at all, so the stderr bug was
-# also the only thing standing in for one: a genuinely failed fetch would have
-# been just as invisible as a successful one was fatal.
+# It is *redirecting* the stream that materialises the ErrorRecord, not writing
+# to it. So the bare `git fetch` / `git clone` calls this replaced were never at
+# risk from their own progress output, and the one site that genuinely was is
+# Repo-IsDirty below, which already had `2>$null` -- which is why that one keeps
+# its own inline Continue window rather than coming through here.
+#
+# Which means this function introduces the hazard (`2>&1 |`) in order to capture
+# output for the failure path, and the Continue window is what makes that safe.
+# Do not remove it on the grounds that the calls did not need it before: they
+# did not, and they do now. ForEach-Object rather than Select-Object on purpose
+# -- -First halts the native command with StopUpstreamCommandsException and
+# loses the exit code with it.
+#
+# The real defect at these call sites was the missing exit-code check: they had
+# none, so a genuinely failed fetch was silent. $LASTEXITCODE is the only thing
+# that reports whether a native command succeeded.
 function Invoke-Native {
     param(
         [Parameter(Mandatory = $true)][string]$Command,
@@ -110,6 +117,10 @@ function Get-PythonCommand {
 
 function Repo-IsDirty {
     if (-not (Test-Path (Join-Path $SourceDir ".git"))) { return $false }
+    # This is the site the reported NativeCommandError actually came from: of
+    # every git call in this script, it was the only one already redirecting a
+    # stream, and per the measurements above that is what makes 5.1 raise.
+    #
     # Not Invoke-Git: this one keeps stderr discarded rather than merged, since
     # merging it would let a git warning read as a modified file and silently
     # downgrade the install to "use the existing checkout". It still needs the

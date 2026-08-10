@@ -150,6 +150,72 @@ class InstallerTomlTest(unittest.TestCase):
             twice = config.read_text(encoding="utf-8")
 
             self.assertEqual(once, twice)
+            # Stability alone does not discriminate: the old implementation was
+            # accidentally idempotent, because its `"codex_hooks = true" in text`
+            # test matched the duplicate line it had just written. This assertion
+            # compared two identical *corrupt* files and passed. Parse it.
+            self.assertIs(tomllib.loads(twice)["features"]["codex_hooks"], True)
+            self.assertEqual(["codex_hooks = true"], _assignments_in_features(twice))
+
+    def test_an_array_of_tables_ends_the_features_section(self) -> None:
+        """`[[x]]` is a header too — keys under it are not [features] keys.
+
+        Matching only `[x]` left it unrecognised, so a `codex_hooks` key inside
+        the array was attributed to [features], collapsed as a duplicate and
+        deleted. The result still parses, so the tomllib guard cannot catch it.
+        """
+        source = (
+            "[features]\ncodex_hooks = false\n\n"
+            '[[mcp_servers]]\nname = "a"\ncodex_hooks = "keep me"\n'
+        )
+        updated = self.installer.enable_codex_hooks(source)
+        assert updated is not None
+        parsed = tomllib.loads(updated)
+        self.assertIs(parsed["features"]["codex_hooks"], True)
+        self.assertEqual("keep me", parsed["mcp_servers"][0]["codex_hooks"])
+
+    def test_configs_that_already_enable_it_another_way_are_left_alone(self) -> None:
+        """Valid TOML the line rewriter cannot read must be a no-op, not an abort.
+
+        Each of these is already `features.codex_hooks = true`. The rewriter sees
+        no `[features]` *header*, so it would append one and produce a duplicate
+        declaration — turning a config that was fine into a SystemExit telling
+        the user to hand-edit TOML.
+        """
+        for label, source in [
+            ("inline table", "features = { codex_hooks = true }\n"),
+            ("dotted key", "features.codex_hooks = true\n"),
+            ("quoted key", '[features]\n"codex_hooks" = true\n'),
+            ("quoted header", '["features"]\ncodex_hooks = true\n'),
+        ]:
+            with self.subTest(label):
+                self.assertIsNone(self.installer.enable_codex_hooks(source))
+
+    def test_a_bom_does_not_hide_the_features_table(self) -> None:
+        """PowerShell 5.1's Set-Content writes one by default."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = Path(temp_dir) / "config.toml"
+            config.write_text(
+                "[features]\ncodex_hooks = false\n\n" + PROJECTS, encoding="utf-8-sig"
+            )
+            self.installer.ensure_codex_hooks_enabled(config)
+            text = config.read_text(encoding="utf-8-sig")
+            self.assertIs(tomllib.loads(text)["features"]["codex_hooks"], True)
+            self.assertEqual(["codex_hooks = true"], _assignments_in_features(text))
+
+    def test_a_non_latin1_project_path_survives(self) -> None:
+        """read_text() with no encoding uses the ANSI codepage on Windows."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = Path(temp_dir) / "config.toml"
+            config.write_text(
+                '[features]\ncodex_hooks = false\n\n[projects."/tmp/あ"]\n'
+                'trust_level = "trusted"\n',
+                encoding="utf-8",
+            )
+            self.installer.ensure_codex_hooks_enabled(config)
+            parsed = tomllib.loads(config.read_text(encoding="utf-8"))
+            self.assertIs(parsed["features"]["codex_hooks"], True)
+            self.assertIn("/tmp/あ", parsed["projects"])
 
 
 if __name__ == "__main__":
