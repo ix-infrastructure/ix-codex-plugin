@@ -143,7 +143,15 @@ else:
 """
 
 
-def _write_fake_ix(directory: Path) -> None:
+FAILING_IX = """#!/usr/bin/env python3
+import sys
+
+sys.stderr.write("graph not ingested; run ix init\n")
+sys.exit(2)
+"""
+
+
+def _write_fake_ix(directory: Path, source: str = FAKE_IX) -> None:
     """Put a fake `ix` on PATH that this platform can actually execute.
 
     A bare `ix` carrying a `#!` line works only on POSIX. Windows cannot exec a
@@ -155,13 +163,13 @@ def _write_fake_ix(directory: Path) -> None:
     """
     if os.name == "nt":
         impl = directory / "ix_impl.py"
-        impl.write_text(FAKE_IX, encoding="utf-8")
+        impl.write_text(source, encoding="utf-8")
         (directory / "ix.bat").write_text(
             f'@echo off\r\n"{sys.executable}" "{impl}" %*\r\n', encoding="utf-8"
         )
         return
     fake_ix = directory / "ix"
-    fake_ix.write_text(FAKE_IX, encoding="utf-8")
+    fake_ix.write_text(source, encoding="utf-8")
     fake_ix.chmod(0o755)
 
 
@@ -296,10 +304,109 @@ class McpCliInvocationTest(unittest.TestCase):
                     "FAKE_IX_LOG": str(temp_path / "argv.jsonl"),
                     "PATH": f"{temp_path}{os.pathsep}{os.environ.get('PATH', '')}",
                 }
-                with patch.dict(os.environ, environment):
-                    result = json.loads(server.ix_locate(f"Widget{char}x"))
+                # Run from the temp directory: if the guard ever breaks, the `>`
+                # case redirects into the working directory, and a test that
+                # litters the repo with a file called `x` when it fails is how
+                # that file ends up committed.
+                cwd = os.getcwd()
+                os.chdir(temp_path)
+                try:
+                    with patch.dict(os.environ, environment):
+                        result = json.loads(server.ix_locate(f"Widget{char}x"))
+                finally:
+                    os.chdir(cwd)
                 self.assertIn("refusing to run", result.get("error", ""))
                 self.assertIn(repr(char), result["error"])
+
+    @unittest.skipUnless(os.name == "nt", "cmd.exe shim only exists on Windows")
+    def test_a_newline_in_an_argument_is_refused(self) -> None:
+        """CR and LF end a command line as surely as `&` splits one."""
+        server = _load_server("v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            _write_fake_ix(temp_path)
+            environment = {
+                "FAKE_IX_LOG": str(temp_path / "argv.jsonl"),
+                "PATH": f"{temp_path}{os.pathsep}{os.environ.get('PATH', '')}",
+            }
+            for char in ("\r", "\n"):
+                with self.subTest(char=char), patch.dict(os.environ, environment):
+                    result = json.loads(server.ix_locate(f"Widget{char}whoami"))
+                self.assertIn("refusing to run", result.get("error", ""))
+
+    @unittest.skipUnless(os.name == "nt", "cmd.exe shim only exists on Windows")
+    def test_a_metacharacter_in_the_resolved_path_is_refused(self) -> None:
+        """list2cmdline leaves an unquoted path alone, so `C:\\a&b\\ix.cmd` splits."""
+        server = _load_server("v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bad_dir = Path(temp_dir) / "a&b"
+            bad_dir.mkdir()
+            _write_fake_ix(bad_dir)
+            environment = {
+                "FAKE_IX_LOG": str(bad_dir / "argv.jsonl"),
+                "PATH": f"{bad_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            }
+            with patch.dict(os.environ, environment):
+                result = json.loads(server.ix_locate("Widget"))
+            self.assertIn("refusing to run", result.get("error", ""))
+
+    def test_a_working_directory_ix_is_not_executed(self) -> None:
+        """shutil.which prefers the CWD on Windows, `path=` notwithstanding."""
+        server = _load_server("v1")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            _write_fake_ix(temp_path)
+            # PATH must be a real directory that simply has no `ix`: an empty
+            # PATH makes shutil.which give up before it ever consults the
+            # working directory, which would make this pass for the wrong
+            # reason. With a populated PATH it still returns `.\ix.bat`.
+            elsewhere = tempfile.mkdtemp()
+            self.addCleanup(os.rmdir, elsewhere)
+            cwd = os.getcwd()
+            os.chdir(temp_path)
+            try:
+                with patch.dict(
+                    os.environ,
+                    {"PATH": elsewhere, "FAKE_IX_LOG": str(temp_path / "l")},
+                    clear=False,
+                ):
+                    os.environ.pop("NoDefaultCurrentDirectoryInExePath", None)
+                    self.assertIsNotNone(
+                        shutil.which("ix", path=elsewhere),
+                        "control: shutil.which should still find the CWD copy, "
+                        "otherwise this test proves nothing",
+                    )
+                    result = json.loads(server.ix_locate("Widget"))
+            finally:
+                # Before the TemporaryDirectory is torn down: Windows cannot
+                # remove a directory that is some process's working directory.
+                os.chdir(cwd)
+            self.assertIn("error", result)
+            self.assertFalse(
+                (temp_path / "l").exists(), "the working-directory ix was executed"
+            )
+
+    def test_the_reason_a_call_failed_reaches_the_caller(self) -> None:
+        """_json hands its callers bare data, so stderr had nowhere to go.
+
+        Both routes: the early returns in _run, and a CLI that actually ran and
+        exited non-zero. The second is the one a user hits normally.
+        """
+        server = _load_server("v1")
+        with patch.dict(os.environ, {"PATH": ""}):
+            result = json.loads(server.ix_locate("Widget"))
+        self.assertIn("ix CLI not found", result.get("error", ""))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            _write_fake_ix(temp_path, source=FAILING_IX)
+            environment = {
+                "FAKE_IX_LOG": str(temp_path / "argv.jsonl"),
+                "PATH": f"{temp_path}{os.pathsep}{os.environ.get('PATH', '')}",
+            }
+            with patch.dict(os.environ, environment):
+                result = json.loads(server.ix_locate("Widget"))
+        self.assertIn("graph not ingested", result.get("error", ""))
 
     def test_every_registered_tool_is_covered(self) -> None:
         """A tool added without a case here would otherwise go untested silently."""

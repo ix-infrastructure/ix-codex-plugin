@@ -269,44 +269,108 @@ def _is_comment(line: str) -> bool:
 _MENTIONS_FEATURES_RE = re.compile(r"""^\s*(?:\[\[?\s*)?["']?features\b""", re.MULTILINE)
 
 
-def _unquoted_bracket_delta(line: str) -> int:
-    """`[` minus `]` on a value line, ignoring quoted text and comments.
+def _consume_line(line: str, open_delimiter: str | None) -> tuple[str | None, int]:
+    """Scan one line; return the still-open triple-quote delimiter and `[` - `]`.
 
-    A line inside a multi-line array can look exactly like a table header --
-    `["a[1]"]` is both a valid quoted-key header and a plausible array element,
-    and no line-level pattern can tell them apart. Tracking depth can: at depth
-    zero it is a header, deeper it is part of a value.
+    Quote state has to survive the return, not just the loop: a multi-line string
+    spans lines, so tracking it per line means an unbalanced `[` inside one is
+    counted as opening an array that never closes, and every following line is
+    read as part of a value. The [features] header then goes unseen and a second
+    one is appended.
     """
-    depth = 0
-    quote: str | None = None
+    delta = 0
     index = 0
     while index < len(line):
-        char = line[index]
-        if quote:
-            if char == "\\" and quote == '"':
-                index += 2
+        if open_delimiter is not None:
+            if line.startswith(open_delimiter, index):
+                index += 3
+                open_delimiter = None
                 continue
-            if char == quote:
-                quote = None
-        elif char in "\"'":
-            quote = char
-        elif char == "#":
+            index += 1
+            continue
+        if line.startswith('"""', index) or line.startswith("'''", index):
+            open_delimiter = line[index : index + 3]
+            index += 3
+            continue
+        char = line[index]
+        if char == "#":
             break
-        elif char == "[":
-            depth += 1
+        if char in "\"'":
+            # A single-line string. Only basic strings honour backslash escapes;
+            # in a literal string a backslash is just a character, which is why
+            # Windows paths are written that way and why this has to distinguish.
+            index += 1
+            while index < len(line):
+                if char == '"' and line[index] == "\\":
+                    index += 2
+                    continue
+                if line[index] == char:
+                    index += 1
+                    break
+                index += 1
+            continue
+        if char == "[":
+            delta += 1
         elif char == "]":
-            depth -= 1
+            delta -= 1
         index += 1
-    return depth
+    return open_delimiter, delta
+
+
+def _top_level_lines(lines: list[str]):
+    """Yield (index, line, at_top_level) for every line.
+
+    `at_top_level` is false inside a multi-line array or string, which is what
+    separates a header from a value that looks like one: `["a[1]"]` is both a
+    valid quoted-key header and a plausible array element, and no line-level
+    pattern can tell them apart.
+    """
+    open_delimiter: str | None = None
+    depth = 0
+    for index, line in enumerate(lines):
+        at_top_level = open_delimiter is None and depth == 0
+        open_delimiter, delta = _consume_line(line, open_delimiter)
+        depth = max(0, depth + delta)
+        yield index, line, at_top_level
+
+
+def _is_features_table(name: str) -> bool:
+    """True for every spelling of the bare `[features]` table.
+
+    `["features"]` is the same table as `[features]` -- TOML strips the quotes --
+    so treating only the bare form as a match meant appending a second one beside
+    it. Not `[features.sub]`: that is a different table, and one this can safely
+    append a `[features]` after.
+    """
+    if len(name) >= 2 and name[0] == name[-1] and name[0] in "\"'":
+        name = name[1:-1]
+    return name == "features"
 
 
 def _has_features_header(text: str) -> bool:
-    """True when a literal `[features]` table header is present to edit."""
-    for line in text.splitlines():
-        header = _TABLE_RE.match(line)
-        if header and header.group(1) == "[" and header.group(2) == "features":
+    """True when a `[features]` table header is present to edit."""
+    lines = text.splitlines()
+    for _index, line, at_top_level in _top_level_lines(lines):
+        header = _TABLE_RE.match(line) if at_top_level else None
+        if header and header.group(1) == "[" and _is_features_table(header.group(2)):
             return True
     return False
+
+
+# A top-level assignment *to* `features` itself -- an inline table, a dotted key,
+# or a scalar. These are the spellings the line rewriter cannot edit, and the
+# reason it must not append a `[features]` table beside them. A `[features.sub]`
+# header is not one of these: it declares a different table, and appending after
+# it is legal.
+_ASSIGNS_FEATURES_RE = re.compile(r"""^\s*(?:features|"features"|'features')\s*[.=]""")
+
+
+def _assigns_features_directly(text: str) -> bool:
+    lines = text.splitlines()
+    return any(
+        at_top_level and _ASSIGNS_FEATURES_RE.match(line)
+        for _index, line, at_top_level in _top_level_lines(lines)
+    )
 
 
 def enable_codex_hooks(text: str) -> str | None:
@@ -355,10 +419,11 @@ def enable_codex_hooks(text: str) -> str | None:
             # cases that must stop here are the flag declared somewhere no line
             # edit can reach it, and `features` being a scalar that cannot hold a
             # table at all.
-            unreachable = (
-                not isinstance(features, dict) or "codex_hooks" in features
-            )
-            if features is not None and unreachable and not _has_features_header(text):
+            if (
+                features is not None
+                and not _has_features_header(text)
+                and _assigns_features_directly(text)
+            ):
                 current = (
                     features.get("codex_hooks")
                     if isinstance(features, dict)
@@ -377,24 +442,26 @@ def enable_codex_hooks(text: str) -> str | None:
     key_lines: list[int] = []
     features_end: int | None = None
 
-    depth = 0  # how deep into a multi-line value this line is; 0 = top level
-    for index, line in enumerate(lines):
-        header = _TABLE_RE.match(line) if depth == 0 else None
+    for index, line, at_top_level in _top_level_lines(lines):
+        header = _TABLE_RE.match(line) if at_top_level else None
         if header:
             if table == "features":
                 features_end = index
             # `[[features]]` is an array-of-tables and a different construct from
             # the `[features]` table, so only the single-bracket form counts.
-            table = header.group(2) if header.group(1) == "[" else None
+            table = (
+                "features"
+                if header.group(1) == "[" and _is_features_table(header.group(2))
+                else None
+            )
             continue
         if (
-            depth == 0
+            at_top_level
             and table == "features"
             and not _is_comment(line)
             and _CODEX_HOOKS_RE.match(line)
         ):
             key_lines.append(index)
-        depth = max(0, depth + _unquoted_bracket_delta(line))
 
     if table == "features":
         features_end = len(lines)

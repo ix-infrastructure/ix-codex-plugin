@@ -119,12 +119,25 @@ def _run(args: list[str], timeout: int = 15) -> tuple[bool, str, str]:
     resolve would have left all 23 tools returning an error on the platform this
     is meant to fix.
     """
-    # `path=` pinned to PATH on purpose: shutil.which searches the *current
-    # directory first* on Windows unless NoDefaultCurrentDirectoryInExePath is
-    # set, which it is not by default. A repository containing an `ix.bat` at its
-    # root would otherwise own this server outright -- no metacharacters needed,
-    # and a worse hole than the one guarded below.
+    # shutil.which searches the *current directory first* on Windows unless
+    # NoDefaultCurrentDirectoryInExePath is set, which it is not by default -- so
+    # a repository shipping an `ix.bat` at its root would own this server
+    # outright, no metacharacters required. Passing `path=` does NOT prevent it:
+    # CPython inserts os.curdir whenever the command has no directory part,
+    # explicit path or not (verified on 3.13 -- it still returns `.\ix.BAT`).
+    #
+    # What does prevent it is refusing the result: a PATH hit is absolute, the
+    # curdir hit is not.
     executable = shutil.which("ix", path=os.environ.get("PATH"))
+    if executable is not None and not os.path.isabs(executable):
+        _record_stderr(
+            msg := (
+                f"refusing to run {executable!r}: resolved from the working "
+                "directory rather than PATH. Remove it, or put the real ix ahead "
+                "of it on PATH."
+            )
+        )
+        return False, "", msg
     if executable is None:
         _record_stderr(msg := "ix CLI not found. Install it and ensure it is on PATH.")
         return False, "", msg

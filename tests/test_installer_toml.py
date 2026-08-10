@@ -250,6 +250,60 @@ class InstallerTomlTest(unittest.TestCase):
                 assert updated is not None
                 self.assertIs(tomllib.loads(updated)["features"]["codex_hooks"], True)
 
+    def test_a_multiline_string_does_not_swallow_the_rest_of_the_file(self) -> None:
+        """Quote state has to survive between lines, not just within one.
+
+        A triple-quoted string containing an unbalanced `[` otherwise reads as
+        an array that never closes, so every later line counts as part of a
+        value: the existing assignment goes unseen and a second one is appended.
+        """
+        cases = {
+            "inside [features]": (
+                '[features]\nnote = """\nsee [1\n"""\ncodex_hooks = false\n'
+            ),
+            "before [features]": (
+                'note = """\nsee [1\n"""\n\n[features]\ncodex_hooks = false\n'
+            ),
+            "literal triple quote": (
+                "[features]\nnote = '''\na [ b\n'''\ncodex_hooks = false\n"
+            ),
+            "hash inside a string is not a comment": (
+                '[features]\nnote = "a # b [ c"\ncodex_hooks = false\n'
+            ),
+        }
+        for label, source in cases.items():
+            with self.subTest(label):
+                updated = self.installer.enable_codex_hooks(source)
+                assert updated is not None
+                self.assertIs(tomllib.loads(updated)["features"]["codex_hooks"], True)
+                self.assertEqual(["codex_hooks = true"], _assignments_in_features(updated))
+
+    def test_features_defined_without_the_flag_is_still_editable(self) -> None:
+        """`features` existing is not the same as the flag being unreachable.
+
+        `[features.sub]` and `["features"]` both put a dict there; the first is a
+        different table that a `[features]` may legally follow, and the second is
+        the same table under another spelling, which the rewriter can edit
+        directly. Only a direct assignment to `features` is beyond it.
+        """
+        for label, source in {
+            "sub-table": "[features.sub]\nx = 1\n",
+            "quoted header, other key": '["features"]\nother = 1\n',
+            "quoted header, the flag": '["features"]\ncodex_hooks = false\n',
+        }.items():
+            with self.subTest(label):
+                updated = self.installer.enable_codex_hooks(source)
+                assert updated is not None
+                self.assertIs(tomllib.loads(updated)["features"]["codex_hooks"], True)
+
+        for label, source in {
+            "inline table, other key": "features = { other = 1 }\n",
+            "dotted, other key": "features.other = 1\n",
+        }.items():
+            with self.subTest(label):
+                with self.assertRaises(SystemExit):
+                    self.installer.enable_codex_hooks(source)
+
     def test_an_uneditable_spelling_aborts_with_a_message_about_itself(self) -> None:
         """Not "the result would not be valid TOML" — the input is fine."""
         for source in (
