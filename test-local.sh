@@ -61,6 +61,24 @@ python3 -m py_compile \
   "$REPO/mcp/server.py" >/dev/null \
   && ok "Python files compile" || fail "Python compile failed"
 
+# Show the failures rather than swallowing them: `>/dev/null 2>&1` leaves a
+# developer with "[FAIL] pro detection tests failed" and nothing to act on.
+if pro_out=$(python3 "$REPO/tests/test_pro_detection.py" 2>&1); then
+  ok "pro detection discriminates OSS from Pro and does not spin on a blip"
+else
+  fail "pro detection tests failed"
+  printf '%s\n' "$pro_out" | sed 's/^/      /'
+fi
+
+# The probe is now a real `ix briefing`, so how often the hook reaches it is
+# part of the contract; common.py alone cannot show that.
+if ups_out=$(python3 "$REPO/tests/test_user_prompt_submit.py" 2>&1); then
+  ok "UserPromptSubmit runs at most one briefing per prompt"
+else
+  fail "user_prompt_submit tests failed"
+  printf '%s\n' "$ups_out" | sed 's/^/      /'
+fi
+
 echo ""
 echo "-- hooks.json event coverage --"
 
