@@ -26,6 +26,13 @@ HEALTH_TTL_SECONDS = 30
 # and the probe now runs a real command rather than `--help`, so it is cached far
 # longer than the health check it used to borrow its TTL from.
 PRO_TTL_SECONDS = 3600
+# ...but only for a definitive answer. A probe that could not reach a verdict
+# (timeout, or a non-zero exit that is not the Pro stub) is still recorded, on a
+# short TTL, purely so it cannot spin: without a record the next hook re-probes
+# immediately, and since the probe is now the most expensive command in the CLI
+# that turns one slow backend into an 8s stall on *every* prompt. Short enough
+# that a transient fault still clears on its own within a minute.
+PRO_PROBE_BACKOFF_SECONDS = 60
 BRIEFING_TTL_SECONDS = 600
 RUNTIME_HEALTH_TTL_SECONDS = 30
 
@@ -234,14 +241,18 @@ def run_ix_json(
     return parse_json_output(result.stdout)
 
 
+def _ix_text_from_stdout(stdout: str | None) -> str | None:
+    fragment = extract_json_fragment(stdout or "")
+    return fragment or (stdout or "").strip() or None
+
+
 def run_ix_text(
     argv: list[str], cwd: str | Path | None = None, timeout: int = 10
 ) -> str | None:
     result = run_command(argv, cwd=cwd, timeout=timeout)
     if not result or result.returncode != 0:
         return None
-    fragment = extract_json_fragment(result.stdout)
-    return fragment or result.stdout.strip() or None
+    return _ix_text_from_stdout(result.stdout)
 
 
 def _is_pro_stub_response(result: subprocess.CompletedProcess[str]) -> bool:
@@ -256,17 +267,38 @@ def _is_pro_stub_response(result: subprocess.CompletedProcess[str]) -> bool:
     return "requires Ix Pro" in blob
 
 
-def ix_pro_available(cwd: str | Path | None) -> bool:
+def probe_pro(cwd: str | Path | None) -> tuple[bool, str | None]:
+    """(Pro is available, the briefing this probe produced — if it ran one).
+
+    The probe *is* `ix briefing`, so its output is the briefing. Returning it
+    lets the one caller that wants a briefing use the one already paid for
+    instead of running the most expensive command in the CLI a second time on
+    the same prompt. The second element is None whenever there is nothing to
+    reuse: answered from cache, not a Pro install, or no verdict.
+    """
     if PRO_CACHE_PATH.exists():
         try:
             cached = json.loads(PRO_CACHE_PATH.read_text())
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, OSError):
             cached = None
         if isinstance(cached, dict):
-            timestamp = float(cached.get("timestamp", 0))
+            try:
+                timestamp = float(cached.get("timestamp", 0))
+            except (TypeError, ValueError):
+                # A cache file with a junk timestamp is not a reason to take the
+                # hook down; treat it as absent and re-probe. briefing_due()
+                # below already handles its own cache this way.
+                timestamp = 0.0
             ok = bool(cached.get("ok", False))
-            if time.time() - timestamp < PRO_TTL_SECONDS:
-                return ok
+            # A tentative entry only suppresses re-probing; it never answers
+            # "yes", so a Pro user cannot be locked out by one that says False.
+            ttl = (
+                PRO_PROBE_BACKOFF_SECONDS
+                if cached.get("tentative")
+                else PRO_TTL_SECONDS
+            )
+            if time.time() - timestamp < ttl:
+                return ok, None
 
     # Probe with the real command, not `--help`.
     #
@@ -281,19 +313,32 @@ def ix_pro_available(cwd: str | Path | None) -> bool:
     # real command exits 0. ix_healthy() is checked before this, so the backend
     # is already known reachable.
     result = run_command(["ix", "briefing", "--format", "json"], cwd=cwd, timeout=8)
-    if result is None:
-        # Could not run ix at all (timeout, OSError). Says nothing about Pro.
-        return False
+    if result is None or (
+        result.returncode != 0 and not _is_pro_stub_response(result)
+    ):
+        # No verdict. Either ix could not be run at all (timeout, OSError), or it
+        # exited non-zero without the stub's sentinel — a backend hiccup, an
+        # expired session, a slow first call. Answer False for this run, but do
+        # not record it as the definitive "not Pro": PRO_TTL_SECONDS is an hour,
+        # and one blip must not suppress Pro for a Pro user that long.
+        #
+        # It is still written, on the much shorter backoff TTL. Returning without
+        # recording anything looks harmless and is not: the probe runs a real
+        # `ix briefing`, so a backend slow enough to hit the 8s timeout would be
+        # re-probed on every prompt, and the user would pay those 8 seconds every
+        # time while Pro stayed off regardless.
+        _write_cache(
+            PRO_CACHE_PATH,
+            {"timestamp": time.time(), "ok": False, "tentative": True},
+        )
+        return False, None
     ok = result.returncode == 0
-    if not ok and not _is_pro_stub_response(result):
-        # A non-zero exit that is NOT the Pro stub is a transient failure — a
-        # backend hiccup, an expired session, a slow first call. Returning False
-        # for this run is right, but caching it is not: PRO_TTL_SECONDS is an
-        # hour, so one blip would suppress every Pro feature for a Pro user
-        # until it expired. Leave the cache alone and re-probe next time.
-        return False
     _write_cache(PRO_CACHE_PATH, {"timestamp": time.time(), "ok": ok})
-    return ok
+    return ok, (_ix_text_from_stdout(result.stdout) if ok else None)
+
+
+def ix_pro_available(cwd: str | Path | None) -> bool:
+    return probe_pro(cwd)[0]
 
 
 def briefing_due(ttl_seconds: int = BRIEFING_TTL_SECONDS) -> bool:

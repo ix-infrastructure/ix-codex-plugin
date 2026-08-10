@@ -82,7 +82,7 @@ Use only to understand what a target does if ix explain was insufficient.
 
 ### Step 7 — Pro context (if ix pro available)
 
-Detect Pro by running `ix briefing --format json`. It returns JSON with a `revision` field when Pro is active, and exits 1 with `The 'briefing' command requires Ix Pro.` otherwise. Do not probe with `--help` — Pro commands are always registered (as stubs when @ix/pro is absent), so `--help` succeeds either way and tells you nothing.
+Do not probe for Pro separately — run the command this step needs and read the result. Pro commands are always registered: when @ix/pro is absent the CLI installs a stub that exits 1 with `The '<name>' command requires Ix Pro.`, so that message is the definitive "OSS-only, skip this step" signal, and it costs nothing beyond the call you were making anyway. Do not probe with `--help` (commander handles it before the stub's action runs, so it succeeds either way and tells you nothing), and do not gate on a field in the JSON — `revision` is present on every Pro briefing and is often `null`.
 
 Before finalizing the plan, check for existing decisions or plans that constrain this refactor:
 ```bash
