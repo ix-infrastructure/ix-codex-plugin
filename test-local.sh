@@ -61,6 +61,10 @@ python3 -m py_compile \
   "$REPO/mcp/server.py" >/dev/null \
   && ok "Python files compile" || fail "Python compile failed"
 
+python3 "$REPO/tests/test_pro_detection.py" >/dev/null 2>&1 \
+  && ok "pro detection caches the stub answer, not transient failures" \
+  || fail "pro detection tests failed"
+
 echo ""
 echo "-- hooks.json event coverage --"
 

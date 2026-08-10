@@ -244,6 +244,18 @@ def run_ix_text(
     return fragment or result.stdout.strip() or None
 
 
+def _is_pro_stub_response(result: subprocess.CompletedProcess[str]) -> bool:
+    """True when ix answered with the Pro stub — a definitive 'not a Pro install'.
+
+    The stub's contract is the literal string `The '<name>' command requires Ix
+    Pro.` on exit 1. Matching it is what separates "Pro is absent" from "the
+    probe happened to fail", which is the difference between a cacheable answer
+    and one that must not be cached.
+    """
+    blob = f"{result.stdout or ''}{result.stderr or ''}"
+    return "requires Ix Pro" in blob
+
+
 def ix_pro_available(cwd: str | Path | None) -> bool:
     if PRO_CACHE_PATH.exists():
         try:
@@ -269,7 +281,17 @@ def ix_pro_available(cwd: str | Path | None) -> bool:
     # real command exits 0. ix_healthy() is checked before this, so the backend
     # is already known reachable.
     result = run_command(["ix", "briefing", "--format", "json"], cwd=cwd, timeout=8)
-    ok = bool(result and result.returncode == 0)
+    if result is None:
+        # Could not run ix at all (timeout, OSError). Says nothing about Pro.
+        return False
+    ok = result.returncode == 0
+    if not ok and not _is_pro_stub_response(result):
+        # A non-zero exit that is NOT the Pro stub is a transient failure — a
+        # backend hiccup, an expired session, a slow first call. Returning False
+        # for this run is right, but caching it is not: PRO_TTL_SECONDS is an
+        # hour, so one blip would suppress every Pro feature for a Pro user
+        # until it expired. Leave the cache alone and re-probe next time.
+        return False
     _write_cache(PRO_CACHE_PATH, {"timestamp": time.time(), "ok": ok})
     return ok
 
