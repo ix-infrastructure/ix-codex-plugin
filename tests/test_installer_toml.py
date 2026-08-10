@@ -278,6 +278,61 @@ class InstallerTomlTest(unittest.TestCase):
                 self.assertIs(tomllib.loads(updated)["features"]["codex_hooks"], True)
                 self.assertEqual(["codex_hooks = true"], _assignments_in_features(updated))
 
+    def test_an_escaped_delimiter_does_not_close_a_multiline_string(self) -> None:
+        r"""A multi-line *basic* string honours escapes, so `\"""` is not the end.
+
+        Treating it as the end closes the string early, and the flag is then
+        written into whichever table the scanner believes it is in. The result is
+        valid TOML, so the write guard cannot catch it -- this is the failure
+        mode that has to be tested rather than trusted.
+        """
+        quote = '"' * 3
+        source = (
+            "[features]\n"
+            f"note = {quote}\n"
+            f"a \\{quote} b\n"
+            f"{quote}\n"
+            "codex_hooks = false\n\n"
+            '[projects."/tmp/example"]\n'
+            'trust_level = "trusted"\n'
+        )
+        updated = self.installer.enable_codex_hooks(source)
+        assert updated is not None
+        parsed = tomllib.loads(updated)
+        self.assertIs(parsed["features"]["codex_hooks"], True)
+        self.assertEqual(["codex_hooks = true"], _assignments_in_features(updated))
+        self.assertNotIn(
+            "codex_hooks",
+            parsed["projects"]["/tmp/example"],
+            "the flag was written into the wrong table",
+        )
+
+        # A literal string has no escapes, so a backslash there must not skip.
+        literal = "'" * 3
+        source = (
+            "[features]\n"
+            f"note = {literal}\n"
+            "C:\\repos [ x\n"
+            f"{literal}\n"
+            "codex_hooks = false\n"
+        )
+        updated = self.installer.enable_codex_hooks(source)
+        assert updated is not None
+        self.assertIs(tomllib.loads(updated)["features"]["codex_hooks"], True)
+
+    def test_an_array_of_features_tables_aborts_about_the_installer(self) -> None:
+        """`[[features]]` is not a table a `[features]` can be appended beside.
+
+        Letting it fall through to the appender still aborts, but as "the result
+        would not be valid TOML" — blaming the user's config for the installer's
+        limits, which is the message this branch exists to replace.
+        """
+        for source in ("[[features]]\nx = 1\n", "[[ features ]]\nx = 1\n"):
+            with self.subTest(source):
+                with self.assertRaises(SystemExit) as caught:
+                    self.installer.enable_codex_hooks(source)
+                self.assertIn("does not edit", str(caught.exception))
+
     def test_features_defined_without_the_flag_is_still_editable(self) -> None:
         """`features` existing is not the same as the flag being unreachable.
 
