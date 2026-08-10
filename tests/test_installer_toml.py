@@ -218,6 +218,38 @@ class InstallerTomlTest(unittest.TestCase):
                 self.assertIs(tomllib.loads(updated)["features"]["codex_hooks"], True)
                 self.assertEqual(["codex_hooks = true"], _assignments_in_features(updated))
 
+    def test_a_features_subtable_is_not_mistaken_for_an_uneditable_spelling(self) -> None:
+        """`[features.sub]` puts a dict at `features` with the key simply absent.
+
+        Aborting on "features exists" would refuse a config the line rewriter
+        handles perfectly well — appending `[features]` after a sub-table is
+        legal TOML. Only the flag being unreachable should stop the edit.
+        """
+        for source in (
+            "[features.sub]\nx = 1\n",
+            '[mcp_servers.a]\ncmd = "x"\n\n[features.sub]\nx = 1\n',
+        ):
+            with self.subTest(source):
+                updated = self.installer.enable_codex_hooks(source)
+                assert updated is not None
+                self.assertIs(tomllib.loads(updated)["features"]["codex_hooks"], True)
+
+    def test_a_multiline_array_is_not_read_as_a_table_header(self) -> None:
+        """`["a[1]"]` is both a valid quoted-key header and an array element.
+
+        Only the nesting depth tells them apart, so a line-level pattern that
+        accepts bracketed names has to track it — otherwise the array element
+        ends the [features] section and the flag lands inside the literal.
+        """
+        for source in (
+            '[features]\npats = [\n  ["a[1]"]\n]\ncodex_hooks = false\n',
+            "[features]\np = [\n  [[1,2],[3,4]]\n]\ncodex_hooks = false\n",
+        ):
+            with self.subTest(source):
+                updated = self.installer.enable_codex_hooks(source)
+                assert updated is not None
+                self.assertIs(tomllib.loads(updated)["features"]["codex_hooks"], True)
+
     def test_an_uneditable_spelling_aborts_with_a_message_about_itself(self) -> None:
         """Not "the result would not be valid TOML" — the input is fine."""
         for source in (
@@ -238,8 +270,17 @@ class InstallerTomlTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.installer.enable_codex_hooks("features = { codex_hooks = true }\n")
 
-        # The forms it *can* read are still edited, and a fresh config still works.
-        for source in ("[features]\ncodex_hooks = false\n", ""):
+        # The forms it *can* read are still edited, and — the part that matters —
+        # a config that never mentions `features` cannot collide with the table
+        # about to be appended. Gating on "file is non-empty" instead would abort
+        # on every 3.10 machine that has ever run Codex, and since install_hooks
+        # runs before install_mcp that would block the server fix from shipping.
+        for source in (
+            "[features]\ncodex_hooks = false\n",
+            '[mcp_servers.a]\ncmd = "x"\n',
+            "# just a comment\n",
+            "",
+        ):
             with self.subTest(source):
                 updated = self.installer.enable_codex_hooks(source)
                 assert updated is not None

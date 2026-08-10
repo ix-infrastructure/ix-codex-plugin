@@ -30,6 +30,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -235,17 +236,30 @@ class McpCliInvocationTest(unittest.TestCase):
                 "PATH": f"{temp_path}{os.pathsep}{os.environ.get('PATH', '')}",
             }
 
-            # Positive control: through an actual shell, this payload fires.
+            # Positive control, in the shape the bug actually has: the payload
+            # handed to subprocess as an argv element, exactly as _run does it,
+            # with nothing guarding it. Running it through `shell=True` instead
+            # would prove only that a shell is a shell -- it is insensitive to
+            # the quoting rule that makes this payload dangerous and that one
+            # safe, so re-adding spaces would leave the control green.
             with patch.dict(os.environ, environment):
-                subprocess.run(f"ix locate {payload}", shell=True, capture_output=True)
-            self.assertTrue(
-                marker_path.exists(),
-                "control failed: the payload cannot fire even via a shell, so the "
-                "assertion below would pass for the wrong reason",
-            )
-            # The control's own split command reached the fake ix and logged a
-            # truncated argv; clear both so the real call is measured alone.
-            marker_path.unlink()
+                resolved = shutil.which("ix", path=str(temp_path))
+                self.assertIsNotNone(resolved)
+                subprocess.run(
+                    [resolved, "locate", payload], capture_output=True
+                )
+            if os.name == "nt":
+                self.assertTrue(
+                    marker_path.exists(),
+                    "control failed: an unguarded argv call did not fire the "
+                    "payload, so the assertion below would pass for the wrong "
+                    "reason -- check the payload is still space-free",
+                )
+                marker_path.unlink()
+            else:
+                # No shim, no shell: nothing to escape, and the control is that
+                # the CLI receives it whole.
+                self.assertFalse(marker_path.exists())
             log_path.unlink(missing_ok=True)
 
             with patch.dict(os.environ, environment):
@@ -263,6 +277,29 @@ class McpCliInvocationTest(unittest.TestCase):
                 self.assertEqual([], logged, "the argument must not reach the CLI")
             else:
                 self.assertEqual([["locate", payload, "--format", "json"]], logged)
+
+    @unittest.skipUnless(os.name == "nt", "cmd.exe shim only exists on Windows")
+    def test_every_refused_character_is_refused(self) -> None:
+        """One payload carrying several metacharacters cannot pin the set.
+
+        With `Widget&echo>MARKER` as the only case, dropping either `&` or `>`
+        from the refused set leaves the test green, and `%` is never exercised
+        at all — so a later "fix" for the `Vec<T>` false positive could quietly
+        reopen the hole.
+        """
+        server = _load_server("v1")
+        for char in "&|<>^\"%!":
+            with self.subTest(char=char), tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+                _write_fake_ix(temp_path)
+                environment = {
+                    "FAKE_IX_LOG": str(temp_path / "argv.jsonl"),
+                    "PATH": f"{temp_path}{os.pathsep}{os.environ.get('PATH', '')}",
+                }
+                with patch.dict(os.environ, environment):
+                    result = json.loads(server.ix_locate(f"Widget{char}x"))
+                self.assertIn("refusing to run", result.get("error", ""))
+                self.assertIn(repr(char), result["error"])
 
     def test_every_registered_tool_is_covered(self) -> None:
         """A tool added without a case here would otherwise go untested silently."""

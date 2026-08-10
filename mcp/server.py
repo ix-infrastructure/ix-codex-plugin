@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 from typing import Optional
 
 # The MCP Python SDK renamed FastMCP to MCPServer in 2.0.0 and moved it from
@@ -59,7 +60,10 @@ mcp = _Server("ix-memory")
 # The cost is that a symbol named with one of these cannot be queried on Windows,
 # which beats running it.
 _CMD_SHIM_SUFFIXES = (".cmd", ".bat")
-_CMD_METACHARACTERS = frozenset('&|<>^"%\r\n')
+# `!` is here for shims that enable delayed expansion: it cannot split a command
+# (expansion happens after tokenisation) but it does substitute an environment
+# value into the query, which is the same disclosure `%VAR%` gives.
+_CMD_METACHARACTERS = frozenset('&|<>^"%!\r\n')
 
 
 def _unsafe_for_cmd_shim(executable: str, args: list[str]) -> str:
@@ -67,9 +71,35 @@ def _unsafe_for_cmd_shim(executable: str, args: list[str]) -> str:
     if not executable.lower().endswith(_CMD_SHIM_SUFFIXES):
         return ""
     found: set[str] = set()
-    for arg in args:
+    # The executable too: list2cmdline leaves an unquoted path alone, so an `ix`
+    # installed under `C:\Users\a&b\` splits at the `&`. Not attacker-controlled,
+    # but it fails silently and is one line to catch.
+    for arg in (executable, *args):
         found |= set(arg) & _CMD_METACHARACTERS
     return " ".join(repr(c) for c in sorted(found))
+
+
+# Why the reason a call failed is stashed rather than returned: _json hands its
+# 21 callers bare data, so stderr had nowhere to go and every failure read
+# "failed without output" -- including "ix CLI not found" and the refusal above,
+# the two a user most needs to see. Threading a second value through 21 call
+# sites is the tidier fix and a much larger diff; this is the small one.
+#
+# It is thread-local and written by *every* _run, including the early returns.
+# A module-level string would be wrong twice over: mcp >= 2.0.0 dispatches each
+# message with anyio.to_thread.run_sync, so two tools really can be in flight at
+# once; and even single-threaded, ix_map and ix_health call _run directly, so a
+# stale value from an earlier tool's _json would be reported under theirs --
+# which for ix_read means one tool's file content surfacing in another's error.
+_call_state = threading.local()
+
+
+def _record_stderr(stderr: str) -> None:
+    _call_state.stderr = stderr
+
+
+def _recorded_stderr() -> str:
+    return getattr(_call_state, "stderr", "")
 
 
 def _run(args: list[str], timeout: int = 15) -> tuple[bool, str, str]:
@@ -89,16 +119,27 @@ def _run(args: list[str], timeout: int = 15) -> tuple[bool, str, str]:
     resolve would have left all 23 tools returning an error on the platform this
     is meant to fix.
     """
-    executable = shutil.which("ix")
+    # `path=` pinned to PATH on purpose: shutil.which searches the *current
+    # directory first* on Windows unless NoDefaultCurrentDirectoryInExePath is
+    # set, which it is not by default. A repository containing an `ix.bat` at its
+    # root would otherwise own this server outright -- no metacharacters needed,
+    # and a worse hole than the one guarded below.
+    executable = shutil.which("ix", path=os.environ.get("PATH"))
     if executable is None:
-        return False, "", "ix CLI not found. Install it and ensure it is on PATH."
+        _record_stderr(msg := "ix CLI not found. Install it and ensure it is on PATH.")
+        return False, "", msg
     unsafe = _unsafe_for_cmd_shim(executable, args)
     if unsafe:
-        return False, "", (
-            f"refusing to run `ix {args[0] if args else ''}`: an argument contains "
-            f"{unsafe} , which the Windows command processor would act on rather "
-            "than pass to the CLI. Rename the symbol or query it by path."
+        _record_stderr(
+            msg := (
+                f"refusing to run `ix {args[0] if args else ''}`: an argument "
+                f"contains {unsafe}, which the Windows command processor would act "
+                "on rather than pass to the CLI. Re-run without those characters "
+                "-- for a symbol, name it without them; for a search, simplify the "
+                "pattern."
+            )
         )
+        return False, "", msg
     try:
         r = subprocess.run(
             [executable, *args],
@@ -107,9 +148,13 @@ def _run(args: list[str], timeout: int = 15) -> tuple[bool, str, str]:
             timeout=timeout,
             check=False,
         )
+        _record_stderr(r.stderr)
         return r.returncode == 0, r.stdout, r.stderr
-    except (OSError, subprocess.SubprocessError) as exc:
-        return False, "", str(exc)
+    # ValueError too: an embedded NUL raises it out of subprocess on every
+    # platform, and it is not an OSError.
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        _record_stderr(detail := str(exc))
+        return False, "", detail
 
 
 def _parse(text: str) -> object:
@@ -133,9 +178,7 @@ def _json(args: list[str], timeout: int = 15) -> object:
     flag; the ones that do not take --format at all (config, init, reset, upgrade,
     view, watch) are not exposed as tools.
     """
-    global _last_stderr
-    ok, stdout, stderr = _run([*args, "--format", "json"], timeout)
-    _last_stderr = stderr
+    ok, stdout, _ = _run([*args, "--format", "json"], timeout)
     return _parse(stdout) if ok else None
 
 
@@ -143,17 +186,8 @@ def _ok(data: object) -> str:
     return json.dumps(data, indent=2) if data is not None else json.dumps({})
 
 
-# stderr from the most recent _json call, so its 21 callers can report why they
-# failed without each having to thread it through. _json returns bare data, so
-# the reason was simply dropped and every failure read "failed without output" --
-# including "ix CLI not found" and the refusal in _run, which are exactly the two
-# a user needs to see. The tool functions are synchronous, so one runs to
-# completion before the next starts and there is nothing to interleave.
-_last_stderr = ""
-
-
 def _err(tool: str, cmd: str, stderr: str = "") -> str:
-    detail = (stderr or _last_stderr).strip()
+    detail = (stderr or _recorded_stderr()).strip()
     msg = f"{cmd} failed: {detail}" if detail else f"{cmd} failed without output"
     return json.dumps({"error": msg, "tool": tool})
 

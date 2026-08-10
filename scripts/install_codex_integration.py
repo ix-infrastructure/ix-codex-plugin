@@ -266,6 +266,40 @@ def _is_comment(line: str) -> bool:
     return line.lstrip().startswith("#")
 
 
+_MENTIONS_FEATURES_RE = re.compile(r"""^\s*(?:\[\[?\s*)?["']?features\b""", re.MULTILINE)
+
+
+def _unquoted_bracket_delta(line: str) -> int:
+    """`[` minus `]` on a value line, ignoring quoted text and comments.
+
+    A line inside a multi-line array can look exactly like a table header --
+    `["a[1]"]` is both a valid quoted-key header and a plausible array element,
+    and no line-level pattern can tell them apart. Tracking depth can: at depth
+    zero it is a header, deeper it is part of a value.
+    """
+    depth = 0
+    quote: str | None = None
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if quote:
+            if char == "\\" and quote == '"':
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+        elif char in "\"'":
+            quote = char
+        elif char == "#":
+            break
+        elif char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+        index += 1
+    return depth
+
+
 def _has_features_header(text: str) -> bool:
     """True when a literal `[features]` table header is present to edit."""
     for line in text.splitlines():
@@ -313,16 +347,27 @@ def enable_codex_hooks(text: str) -> str | None:
             # correct, but under a message about invalid TOML, which points at
             # the wrong thing entirely. The config is fine; this function just
             # cannot edit that form. Say so, with the value it found.
-            if features is not None and not _has_features_header(text):
+            #
+            # Only when the flag itself is unreachable, though. `features` being
+            # present is not enough: `[features.sub]` puts a dict there while the
+            # key is simply absent, and appending a `[features]` table after a
+            # sub-table is legal TOML and is what the old code correctly did. The
+            # cases that must stop here are the flag declared somewhere no line
+            # edit can reach it, and `features` being a scalar that cannot hold a
+            # table at all.
+            unreachable = (
+                not isinstance(features, dict) or "codex_hooks" in features
+            )
+            if features is not None and unreachable and not _has_features_header(text):
                 current = (
-                    features.get("codex_hooks", "<unset>")
+                    features.get("codex_hooks")
                     if isinstance(features, dict)
                     else features
                 )
                 raise SystemExit(
                     f"Cannot enable codex_hooks automatically: `features` is "
                     f"declared in a form this installer does not edit (found "
-                    f"{current!r}).\n"
+                    f"codex_hooks = {current!r}).\n"
                     f"Set `codex_hooks = true` under a [features] table by hand "
                     f"and re-run."
                 )
@@ -332,8 +377,9 @@ def enable_codex_hooks(text: str) -> str | None:
     key_lines: list[int] = []
     features_end: int | None = None
 
+    depth = 0  # how deep into a multi-line value this line is; 0 = top level
     for index, line in enumerate(lines):
-        header = _TABLE_RE.match(line)
+        header = _TABLE_RE.match(line) if depth == 0 else None
         if header:
             if table == "features":
                 features_end = index
@@ -341,8 +387,14 @@ def enable_codex_hooks(text: str) -> str | None:
             # the `[features]` table, so only the single-bracket form counts.
             table = header.group(2) if header.group(1) == "[" else None
             continue
-        if table == "features" and not _is_comment(line) and _CODEX_HOOKS_RE.match(line):
+        if (
+            depth == 0
+            and table == "features"
+            and not _is_comment(line)
+            and _CODEX_HOOKS_RE.match(line)
+        ):
             key_lines.append(index)
+        depth = max(0, depth + _unquoted_bracket_delta(line))
 
     if table == "features":
         features_end = len(lines)
@@ -364,11 +416,17 @@ def enable_codex_hooks(text: str) -> str | None:
             at -= 1
         lines.insert(at, "codex_hooks = true")
     else:
-        if tomllib is None and text.strip():
+        if tomllib is None and _MENTIONS_FEATURES_RE.search(text):
             # Appending a table blind is the one branch that can corrupt a config
             # we were unable to read: if `features` is already declared some other
             # way, this produces a duplicate declaration, and with no parser there
             # is nothing to catch it before the write.
+            #
+            # Gated on the word appearing at all, not on the file being non-empty.
+            # A config that never mentions `features` -- which is most of them,
+            # Codex writes [projects."..."] and [mcp_servers.*] -- cannot collide
+            # with a table that is about to be appended, and refusing those would
+            # block the install on every 3.10 machine that has ever run Codex.
             raise SystemExit(
                 "Cannot safely enable codex_hooks: this interpreter has neither "
                 "tomllib (Python 3.11+) nor tomli, so the existing config cannot "
