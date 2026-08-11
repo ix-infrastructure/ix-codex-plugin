@@ -58,17 +58,54 @@ jobs:
             -not -path './.git/*' -not -path '*/node_modules/*' -not -path '*/dist/*' -print0)
           exit $fail
 
+  # ── Python tests ─────────────────────────────────────────────────────────
+  # tests/ existed and ran nowhere: the gate was shellcheck plus a JSON parse,
+  # so "CI is green" said nothing about the hooks, the installer or the MCP
+  # server. The suites that caught the last round of bugs were enforced only by
+  # whoever remembered to run test-local.sh.
+  #
+  # No pip install step on purpose. Every file under tests/ fakes what it needs
+  # -- the MCP SDK is stubbed for both major versions, and `ix` is a script
+  # written onto PATH -- so this needs nothing but an interpreter, and a
+  # dependency that cannot be installed can never be the reason the gate is red.
+  #
+  # Windows is a real leg rather than a nicety: the MCP server resolves its
+  # executable differently there, `.cmd` shims route arguments through cmd.exe,
+  # and the tests that cover both skip on Linux. A Linux-only gate would report
+  # green on exactly the platform those guards exist for.
+  tests:
+    name: Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11'
+
+      - name: Run tests
+        shell: bash
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+
   # ── Aggregate gate ───────────────────────────────────────────────────────
-  # One stable required-status-check context. Fails if validate failed OR was
+  # One stable required-status-check context. Fails if a needed job failed OR was
   # skipped/cancelled, so the job graph can be reshaped without orphaning the
   # required check.
   ci-success:
     name: CI Passed
     if: always()
-    needs: [validate]
+    needs: [validate, tests]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded
         run: |
           echo "validate=${{ needs.validate.result }}"
+          echo "tests=${{ needs.tests.result }}"
           [ "${{ needs.validate.result }}" = "success" ]
+          [ "${{ needs.tests.result }}" = "success" ]
