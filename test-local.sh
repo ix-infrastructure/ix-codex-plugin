@@ -57,6 +57,7 @@ python3 -m py_compile \
   "$REPO/.codex/hooks/pre_tool_use.py" \
   "$REPO/.codex/hooks/post_tool_use.py" \
   "$REPO/.codex/hooks/stop.py" \
+  "$REPO/mcp/ix_llm.py" \
   "$REPO/scripts/install_codex_integration.py" \
   "$REPO/mcp/server.py" >/dev/null \
   && ok "Python files compile" || fail "Python compile failed"
@@ -167,6 +168,15 @@ echo "-- hook installer TOML checks --"
 python3 "$REPO/tests/test_installer_toml.py" >/dev/null 2>&1 \
   && ok "hook installer keeps config.toml valid" \
   || fail "hook installer TOML check failed"
+
+# `ix` does not validate --format: an unknown value falls through to human text
+# and exits 0. So asking an old CLI for `llm` never errors -- it silently
+# answers with prose. The per-command version floors are the only thing standing
+# between that and records being expected. Tier 5 (explain, read) landed in
+# 0.9.2, everything else in 0.7.0, and Pro commands have no llm renderer at all.
+python3 "$REPO/tests/test_llm_fastpath.py" >/dev/null 2>&1 \
+  && ok "llm fast-path is gated on the CLI version" \
+  || fail "llm fast-path gate check failed"
 
 echo ""
 echo "-- _scrub_secrets unit tests --"
