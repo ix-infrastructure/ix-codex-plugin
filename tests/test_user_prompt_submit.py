@@ -63,7 +63,13 @@ class UserPromptSubmitTest(unittest.TestCase):
 
         runtime = {"briefing": "from the runtime API"} if runtime_answers else None
         self.emitted: list[dict] = []
-        with patch.object(self.common, "run_command", side_effect=fake_run), patch.object(
+        # ix_available() is a real `shutil.which("ix")`, so without this the
+        # whole hook returns at the first guard on any machine that has no CLI
+        # installed -- every assertion below then passes or fails on whether the
+        # developer happens to have `ix` on PATH rather than on the code.
+        with patch.object(self.common, "ix_available", return_value=True), patch.object(
+            self.common, "run_command", side_effect=fake_run
+        ), patch.object(
             self.hook, "read_event", return_value={"cwd": "."}
         ), patch.object(self.hook, "call_runtime", return_value=runtime), patch.object(
             self.hook, "emit_json", side_effect=self.emitted.append
@@ -115,7 +121,9 @@ class UserPromptSubmitTest(unittest.TestCase):
             )
 
         emitted: list[dict] = []
-        with patch.object(self.common, "run_command", side_effect=fake_run), patch.object(
+        with patch.object(self.common, "ix_available", return_value=True), patch.object(
+            self.common, "run_command", side_effect=fake_run
+        ), patch.object(
             self.hook, "read_event", return_value={"cwd": "."}
         ), patch.object(self.hook, "call_runtime", return_value=None), patch.object(
             self.hook, "emit_json", side_effect=emitted.append
