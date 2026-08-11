@@ -213,6 +213,33 @@ class Gate(unittest.TestCase):
         self.assertFalse(ix_llm.supports_llm("stats", run))
 
 
+    def test_a_trailing_blank_line_survives(self) -> None:
+        """`read` emits `content lines=<n>` then n raw lines.
+
+        .strip() deleted blank final lines and left the count over-reporting
+        what followed it; leading whitespace is significant for the same
+        reason. Exactly one trailing newline comes off, no more.
+        """
+        payload = "content lines=3" + chr(10) + "  indented" + chr(10) + chr(10) + chr(10)
+        ix_llm.reset_version_cache()
+        text = ix_llm.try_llm(["read"], fake_run("0.9.2", output=payload))
+        self.assertEqual(payload[:-1], text)
+        self.assertEqual(3, len(text.split(chr(10))) - 1)
+
+    def test_an_ambiguous_version_string_disables_the_fast_path(self) -> None:
+        """Decoration is fine; two version-shaped tokens are not.
+
+        Reading the wrong one is the single error that turns the fast-path on
+        for a CLI that answers with prose, so it refuses instead of guessing.
+        """
+        self.assertEqual((0, 9, 2), ix_llm.parse_semver("ix 0.9.2 (linux-amd64)"))
+        self.assertIsNone(ix_llm.parse_semver("node v20.11.0 / ix 0.7.0"))
+        ix_llm.reset_version_cache()
+        self.assertFalse(
+            ix_llm.supports_llm("stats", fake_run("node v20.11.0 / ix 0.7.0"))
+        )
+
+
 class TryLlm(unittest.TestCase):
     def setUp(self) -> None:
         ix_llm.reset_version_cache()

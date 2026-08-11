@@ -71,7 +71,12 @@ def _load_server(sdk: str):
     """
     mcp_module = types.ModuleType("mcp")
     mcp_server_module = types.ModuleType("mcp.server")
-    modules = {"mcp": mcp_module, "mcp.server": mcp_server_module}
+    # Pin our ix_llm instance for the exec: test_llm_fastpath loads the same
+    # file under the same name, so whichever module was imported last owns
+    # sys.modules["ix_llm"] and the server would otherwise bind an instance
+    # whose memoised version this file never resets -- making the expected
+    # format token depend on test file ordering.
+    modules = {"mcp": mcp_module, "mcp.server": mcp_server_module, "ix_llm": ix_llm}
 
     if sdk == "v2":
         mcpserver_module = types.ModuleType("mcp.server.mcpserver")
