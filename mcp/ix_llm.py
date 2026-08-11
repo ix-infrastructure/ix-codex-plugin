@@ -65,10 +65,12 @@ from typing import Callable, Optional
 # that contain each tier's commit.
 LLM_MIN_VERSION: dict[str, tuple[int, int, int]] = {
     # Tier 1
-    "map": (0, 7, 0),
+    # `map` and `smells` are absent on purpose: neither goes through _read.
+    # ix_map ingests and keeps _run; ix_smells filters client-side on parsed
+    # candidates and so needs records, not prose. Listing a command that cannot
+    # consult the table reads as support that was considered and granted.
     "subsystems": (0, 7, 0),
     "impact": (0, 7, 0),
-    "smells": (0, 7, 0),
     "overview": (0, 7, 0),
     "stats": (0, 7, 0),
     # Tier 2
@@ -85,7 +87,14 @@ LLM_MIN_VERSION: dict[str, tuple[int, int, int]] = {
     "history": (0, 7, 0),
     # Tier 4
     "locate": (0, 7, 0),
-    "diff": (0, 7, 0),
+    # `diff` is deliberately absent, not merely un-versioned. Its renderer has
+    # branches with no llm arm at any version -- the textual-changes path
+    # (diff.ts: graph reports no change but the file text differs) drops to the
+    # `else` and prints "<name> modified (<n> textual changes -- not captured by
+    # parser)" at exit 0. `ix_diff` reaches it with the arguments it already
+    # sends, and prose at exit 0 is exactly what this module forwards as records.
+    # A version floor cannot fix a per-code-path gap: there is no release that
+    # makes it right, so the fast-path must never ask.
     # Tier 5 — these are the reason the table is per-command.
     "explain": (0, 9, 2),
     "read": (0, 9, 2),
@@ -93,7 +102,13 @@ LLM_MIN_VERSION: dict[str, tuple[int, int, int]] = {
 
 SemVer = tuple[int, int, int]
 
-_SEMVER_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+# Decoration is fine; ambiguity is not. `ix --version` prints a bare number
+# today and could grow a suffix, so "ix 0.9.2 (linux-amd64)" must still parse.
+# But if the output carries more than one version-shaped token there is no
+# way to tell which one is ix's -- "node v20.11.0 / ix 0.7.0" would otherwise
+# gate on node's. Reading the wrong version is the one error that can turn
+# the fast-path on for a CLI that renders prose, so that case refuses.
+_SEMVER_RE = re.compile(r"v?(\d+)\.(\d+)\.(\d+)")
 
 # Process-lifetime memo. A server probes the CLI version at most once; the
 # probe is deliberately not cached to disk so the gate stays deterministic and
@@ -110,10 +125,11 @@ def reset_version_cache() -> None:
 
 
 def parse_semver(value: str) -> Optional[SemVer]:
-    match = _SEMVER_RE.search(value or "")
-    if not match:
+    matches = _SEMVER_RE.findall(value or "")
+    if len(matches) != 1:
         return None
-    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    major, minor, patch = matches[0]
+    return (int(major), int(minor), int(patch))
 
 
 def llm_disabled() -> bool:
@@ -161,7 +177,15 @@ def supports_llm(command: str, run: Callable[..., tuple[bool, str, str]], args: 
     if floor is None:
         return False
     if args and (blocked := _TEXT_ONLY_FLAGS.get(command)):
-        if blocked.intersection(args):
+        # Prefix match, not set intersection: `--content=x` is the same flag as
+        # `--content x` and an exact-token check misses it. This guard exists to
+        # survive a future edit, so the spelling that edit might use is exactly
+        # the one it has to catch.
+        if any(
+            arg == flag or arg.startswith(flag + "=")
+            for arg in args
+            for flag in blocked
+        ):
             return False
     version = detect_version(run)
     return version is not None and version >= floor
@@ -200,9 +224,13 @@ def try_llm(
     if not ok:
         return None
 
-    text = (stdout or "").strip()
-    if not text:
+    if not (stdout or "").strip():
         return None
+    # Exactly one trailing newline, not .strip(). `read` emits
+    # `content lines=<n>` followed by n raw source lines, so stripping trailing
+    # whitespace deletes blank final lines and leaves the count over-reporting
+    # what follows it. Leading whitespace can be meaningful for the same reason.
+    text = re.sub(r"\r?\n\Z", "", stdout)
     if is_llm_error_line(text):
         return None
     return text

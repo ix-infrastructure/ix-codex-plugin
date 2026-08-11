@@ -231,8 +231,10 @@ def _read(tool: str, cmd: str, args: list[str], timeout: int = 15) -> str:
     output, an `error code=` record — returns None there and lands on the JSON
     path below, unchanged.
 
-    Pro commands (`briefing`, `decisions`) deliberately do not come through
-    here: `@ix/pro` ships no llm renderers at any version.
+    Pro commands do come through here -- `ix_decisions` calls this -- and are
+    kept off the fast-path by their absence from the version table, not by
+    avoiding this helper. `@ix/pro` ships no llm renderer at any version, so
+    the omission is permanent rather than a floor waiting to be met.
     """
     fast = try_llm(args, _run, timeout=timeout)
     if fast is not None:
@@ -292,7 +294,15 @@ def ix_text(
 
 @mcp.tool()
 def ix_impact(target: str) -> str:
-    """Analyze the blast radius of a symbol or file — returns risk_level, dependents, and recommended_action."""
+    """Analyze the blast radius of a symbol or file — risk level and what depends on it.
+
+    Field names are deliberately not promised here. On a current CLI this returns
+    the compact llm rendering, which spells risk as `risk=` and omits a
+    recommended-action field entirely; on an older one it returns the JSON
+    object with `risk_level`/`dependents`/`recommended_action`. A docstring is
+    the model's contract, so naming keys only one of the two paths produces is a
+    promise this tool cannot keep.
+    """
     return _read("ix_impact", f"ix impact {target}", ["impact", target])
 
 
@@ -313,7 +323,11 @@ def ix_map(file: Optional[str] = None) -> str:
 
 @mcp.tool()
 def ix_overview(target: str) -> str:
-    """Return a structural overview of a symbol or file — children, key items, and hierarchy position."""
+    """Return a structural overview of a symbol or file — its shape and where it sits.
+
+    The llm rendering is a compressed record form; it does not reproduce every
+    key the JSON object carries.
+    """
     return _read("ix_overview", f"ix overview {target}", ["overview", target])
 
 
@@ -380,7 +394,12 @@ def ix_trace(symbol: str, to: Optional[str] = None) -> str:
 
 @mcp.tool()
 def ix_explain(symbol: str) -> str:
-    """Explain a symbol's role, importance, callers, and callees using graph data."""
+    """Explain a symbol's role, importance, and callers using graph data.
+
+    Callees are reported as a count rather than a list: the llm rendering emits
+    `edges callees=<n>`, and the names are only available under `--raw`, which
+    this does not pass.
+    """
     return _read("ix_explain", f"ix explain {symbol}", ["explain", symbol])
 
 
@@ -420,7 +439,11 @@ def ix_smells(path: Optional[str] = None, limit: int = 50) -> str:
 
 @mcp.tool()
 def ix_stats() -> str:
-    """Return graph-wide ix statistics for files, symbols, and graph health."""
+    """Return graph-wide ix statistics.
+
+    The llm rendering reports node and edge counts and drops zero-valued
+    categories, so this is a summary rather than the full JSON breakdown.
+    """
     return _read("ix_stats", "ix stats", ["stats"])
 
 

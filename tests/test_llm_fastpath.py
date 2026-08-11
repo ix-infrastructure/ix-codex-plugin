@@ -142,14 +142,75 @@ class Gate(unittest.TestCase):
         finally:
             del os.environ["IX_DISABLE_LLM_FORMAT"]
 
-    def test_diff_content_stays_on_text(self) -> None:
-        """docs/llm-format.md keeps `diff --content` on text: verbatim hunks
-        have no record form. Guards a future edit, not a live call site."""
-        self.assertTrue(ix_llm.supports_llm("diff", fake_run("0.9.2"), ["diff", "1", "5"]))
+    def test_diff_never_uses_the_fast_path(self) -> None:
+        """Not a version question, which is why no floor can answer it.
+
+        `diff`'s renderer has branches with no llm arm at any version. The
+        textual-changes path -- graph reports no change but the file text
+        differs -- falls to the text `else` and prints "<name> modified (<n>
+        textual changes ...)" at exit 0, and ix_diff reaches it with the
+        arguments it already sends. Prose at exit 0 is precisely what this
+        module would forward as records.
+        """
+        self.assertNotIn("diff", ix_llm.LLM_MIN_VERSION)
+        for args in (["diff", "1", "5"], ["diff", "1", "5", "--content"]):
+            with self.subTest(args):
+                ix_llm.reset_version_cache()
+                self.assertFalse(ix_llm.supports_llm("diff", fake_run("9.9.9"), args))
+
+    def test_a_text_only_flag_still_defers(self) -> None:
+        """The _TEXT_ONLY_FLAGS mechanism, which `diff` no longer exercises.
+
+        Both spellings: `--content x` and `--content=x` are the same flag, and
+        an exact-token check sees only the first.
+        """
+        original_flags = dict(ix_llm._TEXT_ONLY_FLAGS)
+        original_floors = dict(ix_llm.LLM_MIN_VERSION)
+
+        def restore() -> None:
+            # One callable, because addCleanup runs LIFO: registering
+            # clear() and update() separately ran them in the wrong order and
+            # left the table empty for every test after this one.
+            ix_llm._TEXT_ONLY_FLAGS.clear()
+            ix_llm._TEXT_ONLY_FLAGS.update(original_flags)
+            ix_llm.LLM_MIN_VERSION.clear()
+            ix_llm.LLM_MIN_VERSION.update(original_floors)
+
+        self.addCleanup(restore)
+        ix_llm.LLM_MIN_VERSION["probe"] = (0, 7, 0)
+        ix_llm._TEXT_ONLY_FLAGS["probe"] = frozenset({"--content"})
+
+        for args, allowed in (
+            (["probe", "x"], True),
+            (["probe", "--content", "x"], False),
+            (["probe", "--content=x"], False),
+        ):
+            with self.subTest(args):
+                ix_llm.reset_version_cache()
+                self.assertEqual(
+                    allowed, ix_llm.supports_llm("probe", fake_run("0.9.2"), args)
+                )
+
+
+    def test_a_double_digit_minor_is_newer_not_older(self) -> None:
+        """Tuples, not strings: "0.10.0" < "0.9.2" lexically, and 0.10.0 is
+        the newer release. A string compare would silently refuse the
+        fast-path on every version past 0.9.x."""
+        for version in ("0.10.0", "0.9.10", "1.0.0"):
+            with self.subTest(version):
+                ix_llm.reset_version_cache()
+                self.assertTrue(ix_llm.supports_llm("explain", fake_run(version)))
+
+    def test_a_probe_that_exits_non_zero_disables_the_fast_path(self) -> None:
+        """Even when its stdout still looks like a version."""
+        def run(args, timeout=15):
+            if args == ["--version"]:
+                return False, "0.9.2", "boom"
+            return True, "stats nodes=1", ""
+
         ix_llm.reset_version_cache()
-        self.assertFalse(
-            ix_llm.supports_llm("diff", fake_run("0.9.2"), ["diff", "1", "5", "--content"])
-        )
+        self.assertIsNone(ix_llm.detect_version(run))
+        self.assertFalse(ix_llm.supports_llm("stats", run))
 
 
 class TryLlm(unittest.TestCase):
@@ -172,7 +233,14 @@ class TryLlm(unittest.TestCase):
         self.assertNotIn(["stats", "--format", "llm"], run.calls)
 
     def test_defers_on_a_failed_invocation(self) -> None:
-        self.assertIsNone(ix_llm.try_llm(["stats"], fake_run("0.9.2", ok=False)))
+        """With output, so it is the exit code that defers and not emptiness.
+
+        `fake_run(ok=False)` also returns empty stdout, so this passed with the
+        `if not ok` guard deleted -- the emptiness check caught it instead and
+        the exit-code branch had no coverage at all.
+        """
+        run = fake_run("0.9.2", output="stats nodes=1 edges=2", ok=False)
+        self.assertIsNone(ix_llm.try_llm(["stats"], run))
 
     def test_defers_on_empty_output(self) -> None:
         self.assertIsNone(ix_llm.try_llm(["stats"], fake_run("0.9.2", output="   \n")))

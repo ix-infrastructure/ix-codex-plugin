@@ -162,7 +162,7 @@ else:
 # stub `ix` on PATH that reports the argv it was handed, under both MCP SDK
 # major versions.
 python3 "$REPO/tests/test_mcp_cli_invocation.py" >/dev/null 2>&1 \
-  && ok "MCP tools invoke the ix CLI and request JSON" \
+  && ok "MCP tools invoke the ix CLI and request a machine format" \
   || fail "MCP tool invocation check failed"
 
 

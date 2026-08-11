@@ -137,6 +137,13 @@ CASES: list[tuple[str, tuple, dict, list]] = [
     ("ix_history",     ("Widget",),         {},                                           ["history", "Widget", "--format", "json"]),
 ]
 
+# The version the fake CLI reports. 0.9.1 is deliberate: it is above the Tier
+# 1-4 floor and below Tier 5 (explain, read landed in 0.9.2), so one sweep
+# exercises both sides of the per-command gate.
+FAKE_IX_VERSION = "0.9.1"
+FAKE_IX_SEMVER = (0, 9, 1)
+
+
 FAKE_IX = """#!/usr/bin/env python3
 import json
 import os
@@ -146,11 +153,15 @@ with open(os.environ["FAKE_IX_LOG"], "a", encoding="utf-8") as log:
     log.write(json.dumps(sys.argv[1:]) + "\\n")
 
 if sys.argv[1:] == ["--version"]:
-    print("0.9.1")
+    print("__IX_VERSION__")
 else:
     print(json.dumps({"argv": sys.argv[1:]}))
 """
 
+
+# FAKE_IX is a plain literal (it contains JSON braces), so patch the token in.
+FAKE_IX = FAKE_IX.replace("__IX_VERSION__", FAKE_IX_VERSION)
+assert FAKE_IX_VERSION in FAKE_IX, "version placeholder was not substituted"
 
 FAILING_IX = """#!/usr/bin/env python3
 import sys
@@ -184,25 +195,36 @@ def _write_fake_ix(directory: Path, source: str = FAKE_IX) -> None:
 
 class McpCliInvocationTest(unittest.TestCase):
     def setUp(self) -> None:
-        """Pin the argv contract this file exists for: JSON, deterministically.
+        """Reset the fast-path probe so ordering cannot decide what is asserted.
 
         The llm fast-path rewrites the format token, and whether it engages
-        depends on a version probe memoised in ix_llm for the life of the
-        process. That made these 23 assertions depend on what ran before them:
-        alone the cache was already primed and they passed, under `unittest
-        discover` test_llm_fastpath had just reset it, so the probe ran against
-        this file's own fake `ix` (which reports 0.9.1), the fast-path engaged
-        and every expected `--format json` became `llm`.
+        depends on a version memoised in ix_llm for the life of the process.
+        Without this, these assertions inherited whatever ran before them: alone
+        the cache was already primed and the JSON argv was asserted, under
+        `unittest discover` test_llm_fastpath had just reset it, the probe ran
+        against this file's own fake `ix`, and every expected `json` arrived as
+        `llm`.
 
-        Disabled here rather than accommodated: this file pins that every tool
-        reaches the CLI and asks for a machine format. Which token a current CLI
-        gets asked for is test_llm_fastpath's job.
+        Reset rather than disabled. Switching the feature off here would leave
+        the shipped path -- the one a current CLI actually takes -- with no
+        end-to-end coverage anywhere, since test_llm_fastpath only drives
+        ix_llm against a stub. The fake reports FAKE_IX_VERSION, so the expected
+        token is derived from the same table production consults.
         """
         ix_llm.reset_version_cache()
         self.addCleanup(ix_llm.reset_version_cache)
-        patcher = patch.dict(os.environ, {"IX_DISABLE_LLM_FORMAT": "1"})
-        patcher.start()
-        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _expected_argv(argv: list[str]) -> list[str]:
+        """`argv` with its format token set to whatever the gate would choose."""
+        if "--format" not in argv:
+            return argv
+        floor = ix_llm.LLM_MIN_VERSION.get(argv[0])
+        if floor is None or FAKE_IX_SEMVER < floor:
+            return argv
+        swapped = list(argv)
+        swapped[swapped.index("--format") + 1] = "llm"
+        return swapped
 
     def _drive_all_tools(self, sdk: str):
         server = _load_server(sdk)
@@ -221,13 +243,24 @@ class McpCliInvocationTest(unittest.TestCase):
                 "PATH": f"{temp_path}{os.pathsep}{os.environ.get('PATH', '')}",
             }
 
+            with patch.dict(os.environ, environment):
+                # Prime the version probe before measuring. Production runs it
+                # once per process; leaving it inside the loop would land an
+                # extra ["--version"] in the log at whichever case first
+                # consults the gate.
+                ix_llm.detect_version(server._run)
+            log_path.unlink(missing_ok=True)
+
             results = []
             with patch.dict(os.environ, environment):
                 for name, args, kwargs, _expected in CASES:
                     tool = getattr(server, name)
                     results.append(tool(*(resolve(a) for a in args), **kwargs))
 
-            expected = [[resolve(part) for part in argv] for _n, _a, _k, argv in CASES]
+            expected = [
+                self._expected_argv([resolve(part) for part in argv])
+                for _n, _a, _k, argv in CASES
+            ]
             actual = [json.loads(line) for line in log_path.read_text().splitlines()]
             return results, expected, actual, marker_path
 
@@ -309,12 +342,30 @@ class McpCliInvocationTest(unittest.TestCase):
                 if log_path.exists()
                 else []
             )
+            # The gate probes `ix --version` on first use, and where that lands
+            # depends on what primed the cache earlier in the process. It is a
+            # legitimate call carrying no payload, so it is not what this test
+            # measures -- and leaving it in made the result order-dependent.
+            logged = [argv for argv in logged if argv != ["--version"]]
             if os.name == "nt":
                 self.assertIn("error", result)
                 self.assertIn("refusing to run", result["error"])
-                self.assertEqual([], logged, "the argument must not reach the CLI")
+                # Not "the log is empty": the gate probes `ix --version` before
+                # the refusal, and that call is legitimate. The property is that
+                # the payload itself never reaches the CLI.
+                self.assertEqual(
+                    [],
+                    [argv for argv in logged if any(payload in part for part in argv)],
+                    "the argument must not reach the CLI",
+                )
             else:
-                self.assertEqual([["locate", payload, "--format", "json"]], logged)
+                # Format token from the same table production consults: the
+                # fake reports a version above `locate`'s floor, so the shipped
+                # path asks for llm here.
+                self.assertEqual(
+                    [self._expected_argv(["locate", payload, "--format", "json"])],
+                    logged,
+                )
 
     @unittest.skipUnless(os.name == "nt", "cmd.exe shim only exists on Windows")
     def test_every_refused_character_is_refused(self) -> None:
