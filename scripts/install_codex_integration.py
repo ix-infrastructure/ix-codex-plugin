@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 try:  # 3.11+
@@ -599,6 +600,77 @@ def write_version_file(target_root: Path) -> Path:
     return version_path
 
 
+def shell_free_hook_command(python: str, launcher: Path, hook_name: str) -> str:
+    """The `hooks.json` command for `hook_name`, with no shell in it.
+
+    Both paths are quoted: #349 is a live report from a user whose profile is
+    `C:\\Users\\Win 10`, so a space in either path is a case that actually
+    happens rather than a hypothetical.
+    """
+    return f'"{python}" "{launcher}" {hook_name}'
+
+
+HOOK_COMMAND_RE = re.compile(
+    # The shipped command is `/bin/sh -lc '... .codex/hooks/<name>.py ...'`. The
+    # hook's own name is the only part that varies between the five entries, so
+    # that is what gets recovered here. Anchored on the hooks directory so a
+    # future command shape that still names the file keeps working.
+    r"\.codex[/\\]hooks[/\\](?P<name>[A-Za-z_][A-Za-z0-9_]*)\.py"
+)
+
+
+def rewrite_hooks_for_windows(hooks_json: Path, launcher: Path) -> bool:
+    """Point every hook command at the interpreter instead of at `/bin/sh`.
+
+    `hooks.json` ships a `/bin/sh -lc '...'` one-liner per hook. Native Windows
+    has no `/bin/sh`, so *every* hook fails to launch there — before any of the
+    hook's own code runs (ix-infrastructure/Ix#383). The Python half of that
+    issue, `subprocess` not finding `ix.CMD` without consulting `PATHEXT`, is
+    fixed in `common.py`, and is unreachable until this one is fixed too.
+
+    Windows only. On Unix the installed file stays byte-identical to the source,
+    which keeps `install_file`'s content comparison — and therefore re-running
+    the installer without `--force` — working exactly as before.
+
+    `sys.executable` is the interpreter running this installer. Baking it in
+    means no `python3` has to be on `PATH`, which is its own Windows trap: the
+    Ix CLI installs as `ix.CMD` and Python installs as `python.exe`/`py.exe`, and
+    `python3` is frequently the Microsoft Store stub that opens a web page.
+
+    Returns True if the file was rewritten.
+    """
+    if os.name != "nt":
+        return False
+
+    try:
+        payload = json.loads(hooks_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        # A hooks.json we cannot parse is not one we should rewrite. Leave it
+        # for the user to see rather than replacing it with a guess.
+        return False
+
+    changed = False
+    for blocks in payload.get("hooks", {}).values():
+        for block in blocks:
+            for hook in block.get("hooks", []):
+                command = hook.get("command", "")
+                if "/bin/sh" not in command:
+                    continue  # already rewritten, or never was a shell command
+                match = HOOK_COMMAND_RE.search(command)
+                if not match:
+                    continue
+                hook["command"] = shell_free_hook_command(
+                    sys.executable, launcher, match.group("name")
+                )
+                changed = True
+
+    if changed:
+        hooks_json.write_text(
+            json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+        )
+    return changed
+
+
 def install_hooks(target_root: Path, mode: str, force: bool) -> list[Path]:
     installed: list[Path] = []
     codex_dir = target_root / ".codex"
@@ -616,6 +688,18 @@ def install_hooks(target_root: Path, mode: str, force: bool) -> list[Path]:
         destination = hooks_destination / source.name
         install_file(source, destination, mode, force)
         installed.append(destination)
+
+    # After the hooks are on disk, so the launcher this points at exists.
+    # No-op off Windows.
+    hooks_json = codex_dir / "hooks.json"
+    if os.name == "nt" and hooks_json.is_symlink():
+        # A symlinked hooks.json points back at the repo, and rewriting through
+        # it would edit the source tree. The rendered file is machine-specific
+        # (it names this interpreter's absolute path), so it cannot be shared by
+        # a symlink in the first place.
+        hooks_json.unlink()
+        shutil.copy2(source_codex_dir() / "hooks.json", hooks_json)
+    rewrite_hooks_for_windows(hooks_json, hooks_destination / "_launch.py")
 
     installed.append(write_version_file(target_root))
 
