@@ -47,6 +47,67 @@ function Require-Command($name) {
     }
 }
 
+# Run a native command without letting its stderr abort the install.
+#
+# The precise trigger matters, because it is narrower than "5.1 treats native
+# stderr as an error". Measured on 5.1.26100, with $ErrorActionPreference =
+# "Stop", against a command that writes to stderr and exits 0:
+#
+#     cmd /c "echo x 1>&2"                      -> no throw
+#     $v = cmd /c "echo x 1>&2"                 -> no throw
+#     $v = cmd /c "echo x 1>&2" 2>$null         -> THROWS RemoteException
+#     $v = cmd /c "echo x 1>&2" 2>&1            -> THROWS RemoteException
+#     cmd /c "echo x 1>&2" 2>&1 | Out-Null      -> THROWS RemoteException
+#
+# It is *redirecting* the stream that materialises the ErrorRecord, not writing
+# to it. So the bare `git fetch` / `git clone` calls this replaced were never at
+# risk from their own progress output, and the one site that genuinely was is
+# Repo-IsDirty below, which already had `2>$null` -- which is why that one keeps
+# its own inline Continue window rather than coming through here.
+#
+# Which means this function introduces the hazard (`2>&1 |`) in order to capture
+# output for the failure path, and the Continue window is what makes that safe.
+# Do not remove it on the grounds that the calls did not need it before: they
+# did not, and they do now. ForEach-Object rather than Select-Object on purpose
+# -- -First halts the native command with StopUpstreamCommandsException and
+# loses the exit code with it.
+#
+# The real defect at these call sites was the missing exit-code check: they had
+# none, so a genuinely failed fetch was silent. $LASTEXITCODE is the only thing
+# that reports whether a native command succeeded.
+function Invoke-Native {
+    param(
+        [Parameter(Mandatory = $true)][string]$Command,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$FailureMessage
+    )
+
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & $Command @Arguments 2>&1 | ForEach-Object { "$_" }
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ""
+        $output | ForEach-Object { Write-Host "  $_" }
+        Write-Err $FailureMessage
+    }
+
+    return $output
+}
+
+function Invoke-Git {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$FailureMessage
+    )
+
+    return Invoke-Native -Command "git" -Arguments $Arguments -FailureMessage $FailureMessage
+}
+
 function Get-PythonCommand {
     if (Get-Command py -ErrorAction SilentlyContinue) { return @("py", "-3") }
     if (Get-Command python -ErrorAction SilentlyContinue) { return @("python") }
@@ -56,7 +117,24 @@ function Get-PythonCommand {
 
 function Repo-IsDirty {
     if (-not (Test-Path (Join-Path $SourceDir ".git"))) { return $false }
-    $status = git -C $SourceDir status --short 2>$null
+    # This is the site the reported NativeCommandError actually came from: of
+    # every git call in this script, it was the only one already redirecting a
+    # stream, and per the measurements above that is what makes 5.1 raise.
+    #
+    # Not Invoke-Git: this one keeps stderr discarded rather than merged, since
+    # merging it would let a git warning read as a modified file and silently
+    # downgrade the install to "use the existing checkout". It still needs the
+    # Continue window, because 2>$null on 5.1 discards the text but not the
+    # terminating error the redirection itself produces. A status that cannot
+    # run is treated as clean and left to the fetch below to report properly.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $status = & git -C $SourceDir status --short 2>$null
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+    if ($LASTEXITCODE -ne 0) { return $false }
     return -not [string]::IsNullOrWhiteSpace(($status | Out-String))
 }
 
@@ -67,9 +145,9 @@ function Sync-Repo {
             return
         }
         Write-Ok "Updating cached source checkout in $SourceDir"
-        git -C $SourceDir remote set-url origin $RepoUrl
-        git -C $SourceDir fetch --depth 1 origin $Ref
-        git -C $SourceDir checkout --quiet FETCH_HEAD
+        $null = Invoke-Git -Arguments @("-C", $SourceDir, "remote", "set-url", "origin", $RepoUrl) -FailureMessage "Could not point $SourceDir at $RepoUrl."
+        $null = Invoke-Git -Arguments @("-C", $SourceDir, "fetch", "--depth", "1", "origin", $Ref) -FailureMessage "Could not fetch $Ref from $RepoUrl. Check your network and try again."
+        $null = Invoke-Git -Arguments @("-C", $SourceDir, "checkout", "--quiet", "FETCH_HEAD") -FailureMessage "Fetched $Ref but could not check it out in $SourceDir."
         return
     }
 
@@ -79,7 +157,7 @@ function Sync-Repo {
 
     New-Item -ItemType Directory -Force -Path $IxHome | Out-Null
     Write-Ok "Cloning ix-codex-plugin into $SourceDir"
-    git clone --depth 1 --branch $Ref $RepoUrl $SourceDir
+    $null = Invoke-Git -Arguments @("clone", "--depth", "1", "--branch", $Ref, $RepoUrl, $SourceDir) -FailureMessage "Could not clone $RepoUrl into $SourceDir."
 }
 
 function Ensure-Defaults([string[]]$args) {
@@ -120,5 +198,20 @@ if ($pythonCmd.Count -gt 1) {
 $pythonArgs += $installer
 $pythonArgs += $effectiveArgs
 
-& $pythonCmd[0] @pythonArgs
+# This call is deliberately left uncaptured: the Python installer's output is the
+# user-facing result of the whole command and has to reach the console as it
+# happens, not be replayed afterwards.
+#
+# Which, per the measurements above, also means it is not exposed to the 5.1
+# hazard -- an uncaptured native command writing to stderr does not throw, so a
+# Python printing a DeprecationWarning would not have aborted here. The Continue
+# window stays as a guard for the stream this script does not control, and
+# because $LASTEXITCODE below is what decides the outcome either way.
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+    & $pythonCmd[0] @pythonArgs
+} finally {
+    $ErrorActionPreference = $prevEap
+}
 exit $LASTEXITCODE

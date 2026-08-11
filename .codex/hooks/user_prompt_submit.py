@@ -8,8 +8,8 @@ from common import (
     find_workspace_root,
     format_status_briefing,
     ix_healthy,
-    ix_pro_available,
     mark_briefing_sent,
+    probe_pro,
     read_event,
     run_ix_text,
 )
@@ -18,9 +18,18 @@ from common import (
 def main() -> None:
     event = read_event()
     workspace_root = find_workspace_root(event.get("cwd"))
-    if not ix_healthy(workspace_root) or not ix_pro_available(workspace_root):
+    if not ix_healthy(workspace_root):
         return
+    # briefing_due() before the Pro probe, not after: the first is a local file
+    # read and the second now runs a real `ix briefing`. In the other order
+    # the costliest command in the CLI runs on the UserPromptSubmit critical path
+    # and is then thrown away, because the very next line decides there is
+    # nothing to say. Harmless when the probe was `ix briefing --help`; not now.
     if not briefing_due():
+        return
+    # The Pro probe runs `ix briefing` — so when it had to run one, keep it.
+    pro, probed_briefing = probe_pro(workspace_root)
+    if not pro:
         return
 
     # Try runtime API first
@@ -30,8 +39,11 @@ def main() -> None:
     briefing = format_status_briefing(response)
 
     if briefing is None:
-        # Fall back to ix briefing CLI
-        briefing = run_ix_text(
+        # Fall back to the ix briefing CLI — reusing the probe's output when it
+        # produced one, rather than running the same command twice on one prompt.
+        # probed_briefing is None whenever the probe answered from cache, which
+        # is the common case; then this really does have to run.
+        briefing = probed_briefing or run_ix_text(
             ["ix", "briefing", "--format", "json"], cwd=workspace_root, timeout=8
         )
 
