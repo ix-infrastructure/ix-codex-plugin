@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 try:  # 3.11+
@@ -145,6 +146,34 @@ def install_file(source: Path, destination: Path, mode: str, force: bool) -> Non
         if not force:
             raise FileExistsError(f"{destination} already exists. Re-run with --force.")
     shutil.copy2(source, destination)
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:  # pragma: no cover - unresolvable path
+        return False
+
+
+def install_rendered(destination: Path, content: str, force: bool) -> None:
+    """install_file for content generated here rather than copied from the tree.
+
+    No symlink mode: the caller reaches this precisely because the file it needs
+    differs from the source, and a link would point at the wrong bytes. An
+    existing symlink is replaced -- rewriting through it would edit the checkout.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    desired = content.encode("utf-8")
+
+    if destination.is_symlink():
+        destination.unlink()
+    elif destination.exists():
+        if destination.read_bytes() == desired:
+            return
+        if not force:
+            raise FileExistsError(f"{destination} already exists. Re-run with --force.")
+
+    destination.write_bytes(desired)
 
 
 def install_tree(source_dir: Path, destination_dir: Path, mode: str, force: bool) -> None:
@@ -599,6 +628,85 @@ def write_version_file(target_root: Path) -> Path:
     return version_path
 
 
+def shell_free_hook_command(python: str, launcher: Path, hook_name: str) -> str:
+    """The `hooks.json` command for `hook_name`, with no shell in it.
+
+    Both paths are quoted: #349 is a live report from a user whose profile is
+    `C:\\Users\\Win 10`, so a space in either path is a case that actually
+    happens rather than a hypothetical.
+    """
+    return f'"{python}" "{launcher}" {hook_name}'
+
+
+HOOK_COMMAND_RE = re.compile(
+    # The shipped command is `/bin/sh -lc '... .codex/hooks/<name>.py ...'`. The
+    # hook's own name is the only part that varies between the five entries, so
+    # that is what gets recovered here. Anchored on the hooks directory so a
+    # future command shape that still names the file keeps working.
+    r"\.codex[/\\]hooks[/\\](?P<name>[A-Za-z_][A-Za-z0-9_]*)\.py"
+)
+
+
+def render_hooks_json(source: Path, launcher: Path) -> str | None:
+    """The hooks.json this machine should have, or None to install the source as-is.
+
+    The rewrite has to be expressed as *desired content* rather than as an edit
+    applied afterwards. Editing after install_file makes the installed file
+    permanently differ from the source, so the next run's content comparison
+    fails and raises FileExistsError -- and the documented Windows one-liner
+    (`irm ... | iex`) never passes --force, so every update would die, after
+    install_plugin had already written and before install_mcp ran. Comparing
+    against what this platform is supposed to end up with is idempotent by
+    construction.
+
+    utf-8-sig, not utf-8: PowerShell 5.1's Set-Content writes a BOM by default,
+    and json.loads rejects one. Reading it as plain utf-8 meant a BOM'd file
+    raised, the rewrite was skipped, and the installer reported success with all
+    five hooks still dead -- the exact failure this exists to remove. The same
+    trap, and the same fix, as ensure_codex_hooks_enabled above.
+    """
+    if os.name != "nt":
+        return None
+
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        # A hooks.json we cannot parse is not one we should rewrite. Leave it
+        # for the user to see rather than replacing it with a guess.
+        return None
+
+    try:
+        changed = _rewrite_hook_commands(payload, launcher)
+    except (AttributeError, KeyError, TypeError):
+        # Parsed, but not the shape we understand. Same reasoning as above: this
+        # used to escape the JSON guard and abort the installer with a traceback.
+        return None
+
+    if not changed:
+        return None
+    return json.dumps(payload, indent=2) + "\n"
+
+
+def _rewrite_hook_commands(payload: dict, launcher: Path) -> bool:
+    changed = False
+    for blocks in payload["hooks"].values():
+        for block in blocks:
+            for hook in block.get("hooks", []):
+                command = hook.get("command", "")
+                if "/bin/sh" not in command:
+                    continue  # already rewritten, or never was a shell command
+                match = HOOK_COMMAND_RE.search(command)
+                if not match:
+                    continue
+                hook["command"] = shell_free_hook_command(
+                    sys.executable, launcher, match.group("name")
+                )
+                changed = True
+    return changed
+
+
+
+
 def install_hooks(target_root: Path, mode: str, force: bool) -> list[Path]:
     installed: list[Path] = []
     codex_dir = target_root / ".codex"
@@ -608,8 +716,23 @@ def install_hooks(target_root: Path, mode: str, force: bool) -> list[Path]:
     ensure_codex_hooks_enabled(codex_dir / "config.toml")
     installed.append(codex_dir / "config.toml")
 
-    install_file(source_codex_dir() / "hooks.json", codex_dir / "hooks.json", mode, force)
-    installed.append(codex_dir / "hooks.json")
+    hooks_json = codex_dir / "hooks.json"
+    hooks_json_source = source_codex_dir() / "hooks.json"
+    rendered = render_hooks_json(hooks_json_source, hooks_destination / "_launch.py")
+    if rendered is not None and _same_path(hooks_json, hooks_json_source):
+        # Installing the checkout into itself. The rendered file names this
+        # machine's interpreter, so writing it here would leave the tracked
+        # source modified and every later diff carrying one developer's paths.
+        rendered = None
+    if rendered is None:
+        install_file(source_codex_dir() / "hooks.json", hooks_json, mode, force)
+    else:
+        # Windows: the file this machine needs is not the source, so it cannot be
+        # symlinked to it either -- the rendered command names this interpreter's
+        # absolute path. Compare against the rendered content so a second run is
+        # a no-op rather than a FileExistsError.
+        install_rendered(hooks_json, rendered, force)
+    installed.append(hooks_json)
 
     hooks_destination.mkdir(parents=True, exist_ok=True)
     for source in sorted(hooks_source.glob("*.py")):
