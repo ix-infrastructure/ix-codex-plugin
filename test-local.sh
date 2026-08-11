@@ -57,6 +57,7 @@ python3 -m py_compile \
   "$REPO/.codex/hooks/pre_tool_use.py" \
   "$REPO/.codex/hooks/post_tool_use.py" \
   "$REPO/.codex/hooks/stop.py" \
+  "$REPO/.codex/hooks/_launch.py" \
   "$REPO/scripts/install_codex_integration.py" \
   "$REPO/mcp/server.py" >/dev/null \
   && ok "Python files compile" || fail "Python compile failed"
@@ -174,6 +175,14 @@ echo "-- hook installer TOML checks --"
 python3 "$REPO/tests/test_installer_toml.py" >/dev/null 2>&1 \
   && ok "hook installer keeps config.toml valid" \
   || fail "hook installer TOML check failed"
+
+# Every hooks.json command was a `/bin/sh -lc` one-liner, so on native Windows
+# no hook could launch at all -- which also kept the PATHEXT fix in common.py
+# from ever running (Ix#383). Covers the launcher's search order and the
+# installer's Windows-only rewrite, including that it stays a no-op elsewhere.
+python3 "$REPO/tests/test_windows_hook_launch.py" >/dev/null 2>&1 \
+  && ok "hooks launch without a shell on Windows" \
+  || fail "Windows hook-launch check failed"
 
 echo ""
 echo "-- _scrub_secrets unit tests --"
