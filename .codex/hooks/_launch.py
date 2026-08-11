@@ -63,6 +63,15 @@ def main(argv: list[str]) -> int:
     # argv[0] is what the hook sees as its own path, and sys.argv is trimmed to
     # the hook's own arguments, so a hook cannot tell it was launched this way.
     sys.argv = [str(hook), *argv[2:]]
+
+    # The hook's own directory first on sys.path, which is the other half of
+    # picking the nearest hook. Every hook opens `from common import ...`, and
+    # `python3 <hook>` gives it the hook's directory as sys.path[0];
+    # runpy.run_path does not, so the launcher's directory answers instead. A
+    # project-pinned hook would then import the *home* copy of common.py -- the
+    # opposite of the precedence find_hook just established, and silently wrong
+    # rather than an error whenever the two copies differ.
+    sys.path.insert(0, str(hook.parent))
     try:
         runpy.run_path(str(hook), run_name="__main__")
     except SystemExit as exc:  # the hook called sys.exit(); that is its status

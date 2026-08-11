@@ -17,9 +17,12 @@ import importlib.util
 import io
 import json
 import os
+import subprocess
+import shutil
 import sys
 import tempfile
 import unittest
+import uuid
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -89,25 +92,32 @@ class Rewrite(unittest.TestCase):
         self.target.write_text(
             SHIPPED_HOOKS_JSON.read_text(encoding="utf-8"), encoding="utf-8"
         )
-        self.launch = self.tmp / "_launch.py"
+        # Under .codex/hooks/, as a real install has it: HOOK_COMMAND_RE looks
+        # for that path, so a launcher parked anywhere else makes the second
+        # pass match nothing and the idempotency test pass for free.
+        self.launch = self.tmp / ".codex" / "hooks" / "_launch.py"
 
     def tearDown(self) -> None:
         os.name = self._os_name
         sys.executable = self._executable
         self._dir.cleanup()
 
+    def render(self):
+        return installer.render_hooks_json(self.target, self.launch)
+
     def test_is_a_no_op_off_windows(self) -> None:
-        # install_file() decides whether a re-install needs --force by comparing
-        # contents, so a gratuitous rewrite would make every re-run fail.
+        # None means "install the source unchanged", which keeps install_file's
+        # content comparison — and re-running without --force — working.
         os.name = "posix"
         before = self.target.read_text(encoding="utf-8")
-        self.assertFalse(installer.rewrite_hooks_for_windows(self.target, self.launch))
+        self.assertIsNone(self.render())
         self.assertEqual(before, self.target.read_text(encoding="utf-8"))
 
     def test_removes_every_shell_invocation(self) -> None:
         os.name = "nt"
-        self.assertTrue(installer.rewrite_hooks_for_windows(self.target, self.launch))
-        commands = commands_in(json.loads(self.target.read_text(encoding="utf-8")))
+        rendered = self.render()
+        self.assertIsNotNone(rendered)
+        commands = commands_in(json.loads(rendered))
         self.assertTrue(commands)
         for command in commands:
             self.assertNotIn("/bin/sh", command)
@@ -128,8 +138,7 @@ class Rewrite(unittest.TestCase):
         }
 
         os.name = "nt"
-        installer.rewrite_hooks_for_windows(self.target, self.launch)
-        payload = json.loads(self.target.read_text(encoding="utf-8"))
+        payload = json.loads(self.render())
         actual = {
             event: [
                 hook["command"].rsplit(" ", 1)[1]
@@ -142,18 +151,20 @@ class Rewrite(unittest.TestCase):
 
     def test_is_idempotent(self) -> None:
         os.name = "nt"
-        installer.rewrite_hooks_for_windows(self.target, self.launch)
-        once = self.target.read_text(encoding="utf-8")
-        self.assertFalse(installer.rewrite_hooks_for_windows(self.target, self.launch))
-        self.assertEqual(once, self.target.read_text(encoding="utf-8"))
+        once = self.render()
+        self.assertIsNotNone(once)
+        # Feed the rendered output back in: a second pass must find nothing to do.
+        self.target.write_text(once, encoding="utf-8")
+        self.assertIsNone(
+            self.render(), "the `/bin/sh` guard is what stops a self-referential command"
+        )
 
     def test_quotes_paths_containing_spaces(self) -> None:
         """#349 is a live report from a profile at `C:\\Users\\Win 10`."""
         os.name = "nt"
         sys.executable = r"C:\Users\Win 10\Python\python.exe"
         launch = Path(r"C:\Users\Win 10\.codex\hooks\_launch.py")
-        installer.rewrite_hooks_for_windows(self.target, launch)
-        payload = json.loads(self.target.read_text(encoding="utf-8"))
+        payload = json.loads(installer.render_hooks_json(self.target, launch))
         command = payload["hooks"]["SessionStart"][0]["hooks"][0]["command"]
         self.assertTrue(command.startswith(r'"C:\Users\Win 10\Python\python.exe" '))
         self.assertIn(f'"{launch}"', command)
@@ -161,8 +172,135 @@ class Rewrite(unittest.TestCase):
     def test_leaves_an_unparseable_file_alone(self) -> None:
         os.name = "nt"
         self.target.write_text("{ not json", encoding="utf-8")
-        self.assertFalse(installer.rewrite_hooks_for_windows(self.target, self.launch))
+        self.assertIsNone(self.render())
         self.assertEqual("{ not json", self.target.read_text(encoding="utf-8"))
+
+    def test_a_shape_we_do_not_understand_is_left_alone(self) -> None:
+        """Valid JSON, unexpected structure — must not abort the installer.
+
+        These escaped the JSONDecodeError guard and came out as AttributeError,
+        KeyError or TypeError, which nothing catches: a raw traceback partway
+        through an install.
+        """
+        os.name = "nt"
+        for body in ("[]", '{"hooks":"nope"}', '{"other":1}',
+                     '{"hooks":{"S":[{"hooks":[{"command":5}]}]}}'):
+            with self.subTest(body):
+                self.target.write_text(body, encoding="utf-8")
+                self.assertIsNone(self.render())
+
+    def test_a_byte_order_mark_does_not_skip_the_rewrite(self) -> None:
+        """PowerShell 5.1's Set-Content writes one by default.
+
+        Reading as plain utf-8 made json.loads raise, so the rewrite was skipped
+        and the installer reported success with all five hooks still dead — the
+        exact failure this exists to remove.
+        """
+        os.name = "nt"
+        self.target.write_text(
+            SHIPPED_HOOKS_JSON.read_text(encoding="utf-8"), encoding="utf-8-sig"
+        )
+        rendered = self.render()
+        self.assertIsNotNone(rendered)
+        for command in commands_in(json.loads(rendered)):
+            self.assertNotIn("/bin/sh", command)
+
+
+class InstallHooksEndToEnd(unittest.TestCase):
+    """The wiring, not the pure function.
+
+    Every assertion above passed with the rewrite call deleted from
+    install_hooks entirely — the function was covered, its only caller was not.
+    These run the real installer into a temp target.
+    """
+
+    def setUp(self) -> None:
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.target = Path(self._dir.name) / "workspace"
+        self.target.mkdir()
+
+    def install(self):
+        return subprocess.run(
+            [sys.executable, str(REPO_ROOT / "scripts" / "install_codex_integration.py"),
+             "--repo", str(self.target), "--hooks"],
+            capture_output=True, text=True,
+        )
+
+    def installed_commands(self) -> list[str]:
+        text = (self.target / ".codex" / "hooks.json").read_text(encoding="utf-8-sig")
+        return commands_in(json.loads(text))
+
+    def test_a_second_install_is_not_an_error(self) -> None:
+        """The documented Windows one-liner never passes --force.
+
+        Rewriting after install_file left the installed file permanently
+        different from the source, so the next run's content comparison raised
+        FileExistsError — after install_plugin had written and before install_mcp
+        ran, i.e. a partial install with a traceback.
+        """
+        first = self.install()
+        self.assertEqual(0, first.returncode, first.stderr)
+        before = (self.target / ".codex" / "hooks.json").read_bytes()
+
+        second = self.install()
+        self.assertEqual(0, second.returncode, second.stderr)
+        self.assertEqual(
+            before,
+            (self.target / ".codex" / "hooks.json").read_bytes(),
+            "a re-install must leave hooks.json byte-identical",
+        )
+
+    def test_installing_a_checkout_into_itself_leaves_it_unmodified(self) -> None:
+        """`--repo <the plugin checkout>` makes source and destination the same file.
+
+        The rendered command names this machine's interpreter, so writing it
+        there would leave the tracked hooks.json modified and every later diff
+        carrying one developer's absolute paths.
+        """
+        checkout = Path(self._dir.name) / "checkout"
+        (checkout / "scripts").mkdir(parents=True)
+        shutil.copytree(REPO_ROOT / ".codex", checkout / ".codex")
+        shutil.copy2(
+            REPO_ROOT / "scripts" / "install_codex_integration.py",
+            checkout / "scripts" / "install_codex_integration.py",
+        )
+        before = (checkout / ".codex" / "hooks.json").read_bytes()
+
+        result = subprocess.run(
+            [sys.executable, str(checkout / "scripts" / "install_codex_integration.py"),
+             "--repo", str(checkout), "--hooks"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            before,
+            (checkout / ".codex" / "hooks.json").read_bytes(),
+            "the installer rewrote its own tracked source",
+        )
+
+    def test_the_launcher_is_installed_beside_the_hooks(self) -> None:
+        self.assertEqual(0, self.install().returncode)
+        self.assertTrue((self.target / ".codex" / "hooks" / "_launch.py").is_file())
+
+    @unittest.skipUnless(os.name == "nt", "the rewrite is Windows-only")
+    def test_no_hook_still_needs_bin_sh(self) -> None:
+        self.assertEqual(0, self.install().returncode)
+        commands = self.installed_commands()
+        self.assertTrue(commands)
+        for command in commands:
+            self.assertNotIn("/bin/sh", command)
+            self.assertIn("_launch.py", command)
+        launcher_path = self.target / ".codex" / "hooks" / "_launch.py"
+        self.assertIn(str(launcher_path), commands[0], "must point at the installed copy")
+
+    @unittest.skipIf(os.name == "nt", "the rewrite is Windows-only")
+    def test_off_windows_the_installed_file_matches_the_source(self) -> None:
+        self.assertEqual(0, self.install().returncode)
+        self.assertEqual(
+            SHIPPED_HOOKS_JSON.read_bytes(),
+            (self.target / ".codex" / "hooks.json").read_bytes(),
+        )
 
 
 class Launcher(unittest.TestCase):
@@ -187,6 +325,10 @@ class Launcher(unittest.TestCase):
         os.environ["HOME"] = str(path)
         os.environ["USERPROFILE"] = str(path)
 
+    def unique_hook_name(self) -> str:
+        """A hook name no real install on this machine can already have."""
+        return f"probe_{uuid.uuid4().hex}"
+
     def make_hook(self, root: Path, name: str, body: str = "") -> Path:
         hook = root / ".codex" / "hooks" / f"{name}.py"
         hook.parent.mkdir(parents=True, exist_ok=True)
@@ -206,18 +348,63 @@ class Launcher(unittest.TestCase):
         self.assertEqual(nearer, launcher.find_hook("stop", self.tmp / "project"))
 
     def test_falls_back_to_home(self) -> None:
+        # A name no real install can have. find_hook walks up from its start
+        # directory, and on Windows tempfile puts that under %USERPROFILE% --
+        # so a developer who has actually run `install --home` has
+        # ~/.codex/hooks/stop.py sitting on the walk-up path, shadowing the
+        # fixture and passing this for the wrong reason.
+        name = self.unique_hook_name()
         self.set_home(self.tmp / "home")
-        home_hook = self.make_hook(self.tmp / "home", "stop")
+        home_hook = self.make_hook(self.tmp / "home", name)
         elsewhere = self.tmp / "elsewhere"
         elsewhere.mkdir()
-        self.assertEqual(home_hook, launcher.find_hook("stop", elsewhere))
+        self.assertEqual(home_hook, launcher.find_hook(name, elsewhere))
 
     def test_a_missing_hook_is_not_an_error(self) -> None:
         # A workspace with no Ix hooks installed is a normal state; it must not
         # fail the Codex turn.
+        #
+        # Unique name for the reason above, and here it is not just a false pass:
+        # an ancestor `session_start.py` would be *executed* in-process, and it
+        # reads stdin, so on a developer machine with a home install this hangs.
+        name = self.unique_hook_name()
         self.set_home(self.tmp / "nowhere")
         os.chdir(self.tmp)
-        self.assertEqual(0, launcher.main(["_launch.py", "session_start"]))
+        self.assertIsNone(
+            launcher.find_hook(name, self.tmp), "fixture leaked into a real install"
+        )
+        self.assertEqual(0, launcher.main(["_launch.py", name]))
+
+    def test_the_hook_imports_its_own_common(self) -> None:
+        """The other half of preferring the nearest hook.
+
+        Every hook opens `from common import ...`. `python3 <hook>` puts the
+        hook's directory on sys.path[0]; runpy.run_path does not, so without
+        help the launcher's own directory answers instead — and a project-pinned
+        hook silently imports the *home* copy of common.py, which is the exact
+        opposite of the precedence find_hook just established. Silently wrong
+        rather than an error, whenever the two copies differ.
+        """
+        name = self.unique_hook_name()
+        project = self.tmp / "project"
+        home = self.tmp / "home"
+        self.set_home(home)
+
+        for root, mark in ((project, "PROJECT"), (home, "HOME")):
+            hooks = root / ".codex" / "hooks"
+            hooks.mkdir(parents=True, exist_ok=True)
+            (hooks / "common.py").write_text(f"MARK = {mark!r}" + chr(10), encoding="utf-8")
+        self.make_hook(
+            project, name, "from common import MARK" + chr(10) + "print(MARK)" + chr(10)
+        )
+
+        os.chdir(project)
+        for stale in ("common", "ix_hook_common"):
+            sys.modules.pop(stale, None)
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            self.assertEqual(0, launcher.main(["_launch.py", name]))
+        self.assertEqual("PROJECT", buffer.getvalue().strip())
 
     def test_runs_the_hook_as_main(self) -> None:
         self.make_hook(
