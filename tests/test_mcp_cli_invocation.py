@@ -41,6 +41,15 @@ from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+# The same module object server.py imports, so resetting its memoised version
+# here actually affects the server under test.
+_llm_spec = importlib.util.spec_from_file_location(
+    "ix_llm", REPO_ROOT / "mcp" / "ix_llm.py"
+)
+ix_llm = importlib.util.module_from_spec(_llm_spec)
+sys.modules["ix_llm"] = ix_llm
+_llm_spec.loader.exec_module(ix_llm)
+
 
 class _FakeServer:
     """Stands in for FastMCP / MCPServer — only the constructor and .tool() matter."""
@@ -174,6 +183,27 @@ def _write_fake_ix(directory: Path, source: str = FAKE_IX) -> None:
 
 
 class McpCliInvocationTest(unittest.TestCase):
+    def setUp(self) -> None:
+        """Pin the argv contract this file exists for: JSON, deterministically.
+
+        The llm fast-path rewrites the format token, and whether it engages
+        depends on a version probe memoised in ix_llm for the life of the
+        process. That made these 23 assertions depend on what ran before them:
+        alone the cache was already primed and they passed, under `unittest
+        discover` test_llm_fastpath had just reset it, so the probe ran against
+        this file's own fake `ix` (which reports 0.9.1), the fast-path engaged
+        and every expected `--format json` became `llm`.
+
+        Disabled here rather than accommodated: this file pins that every tool
+        reaches the CLI and asks for a machine format. Which token a current CLI
+        gets asked for is test_llm_fastpath's job.
+        """
+        ix_llm.reset_version_cache()
+        self.addCleanup(ix_llm.reset_version_cache)
+        patcher = patch.dict(os.environ, {"IX_DISABLE_LLM_FORMAT": "1"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _drive_all_tools(self, sdk: str):
         server = _load_server(sdk)
 
