@@ -105,6 +105,51 @@ class IxArgvResolutionTest(unittest.TestCase):
 
         self.assertEqual(1, len(calls), "PATH lookup should happen once per process")
 
+    # ── the cost of resolving ────────────────────────────────────────────────
+    # Resolving is what makes the hooks work on Windows and also what makes this
+    # reachable: `ix.CMD` is a batch file, CreateProcess runs those through
+    # `cmd.exe /c`, and subprocess quotes an argument only when it contains
+    # whitespace. Before resolution a bare "ix" could not launch at all there.
+
+    def test_a_shell_metacharacter_stops_the_call(self) -> None:
+        for argument in ("a&whoami", "a|whoami", "a>out", "%USERNAME%", "a!V!"):
+            with self.subTest(argument):
+                with patch.object(
+                    self.common.shutil, "which", return_value=WINDOWS_SHIM
+                ), patch.object(self.common.subprocess, "run") as run:
+                    self.common._ix_executable.cache_clear()
+                    result = self.common.run_command(["ix", "map", argument])
+                self.assertIsNone(result)
+                run.assert_not_called()
+
+    def test_the_background_ingest_stops_too(self) -> None:
+        """The most exposed argument: a model-written path, sent unattended."""
+        with patch.object(
+            self.common.shutil, "which", return_value=WINDOWS_SHIM
+        ), patch.object(self.common.subprocess, "Popen") as popen:
+            self.common._ix_executable.cache_clear()
+            self.common.spawn_background_ix_ingest("a&whoami", None)
+            popen.assert_not_called()
+
+            self.common.spawn_background_ix_ingest("src/app.py", None)
+            popen.assert_called_once()
+
+    def test_a_posix_path_is_never_refused(self) -> None:
+        """No cmd.exe, no shim, nothing to refuse — the guard must not fire.
+
+        `&` and `|` are legal in a POSIX filename, and this runs on every call.
+        """
+        for resolved in ("/usr/local/bin/ix", "/home/a&b/.local/bin/ix"):
+            with self.subTest(resolved):
+                self.assertEqual(
+                    "", self.common.unsafe_for_cmd_shim([resolved, "map", "a&b.py"])
+                )
+
+    def test_a_windows_shim_with_a_clean_argument_is_not_refused(self) -> None:
+        self.assertEqual(
+            "", self.common.unsafe_for_cmd_shim([WINDOWS_SHIM, "map", "src/app.py"])
+        )
+
     def test_every_hook_argv_starts_with_ix(self) -> None:
         """Guards the assumption resolve_ix_argv relies on.
 

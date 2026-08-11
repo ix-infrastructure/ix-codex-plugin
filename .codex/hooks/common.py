@@ -177,19 +177,59 @@ def _ix_executable() -> str:
     return shutil.which("ix") or "ix"
 
 
+# Resolving the executable is what makes the hooks work on Windows, and it is
+# also what makes them reachable: `ix.CMD` is a batch file, and CreateProcess
+# runs those by handing the command line to `cmd.exe /c`. Every argument is then
+# parsed by a shell before the CLI sees it -- and subprocess quotes an argument
+# only when it contains whitespace, so `a&whoami` splits into two commands while
+# `a & whoami` does not. `%VAR%` is expanded either way.
+#
+# These arguments are not trusted: spawn_background_ix_ingest takes the path of
+# a file the model just wrote, and build_search_message takes a pattern lifted
+# out of a command the model ran. Before the resolution above, a bare "ix" could
+# not be launched on Windows at all, so this was unreachable there; afterwards it
+# is the ordinary path.
+#
+# Quoting correctly for cmd.exe is the trap CVE-2024-24576 was about, so this
+# refuses the input rather than trying to escape it. Same set and same reasoning
+# as `_unsafe_for_cmd_shim` in mcp/server.py -- deliberately duplicated, because
+# the installer copies the hooks and the MCP server to different places and
+# neither can import the other.
+_CMD_SHIM_SUFFIXES = (".cmd", ".bat")
+_CMD_METACHARACTERS = frozenset('&|<>^"%!\r\n')
+
+
+def unsafe_for_cmd_shim(argv: list[str]) -> str:
+    """The cmd.exe metacharacters in `argv`, if argv[0] routes through one."""
+    if not argv or not argv[0].lower().endswith(_CMD_SHIM_SUFFIXES):
+        return ""
+    found: set[str] = set()
+    for arg in argv:
+        found |= set(arg) & _CMD_METACHARACTERS
+    return " ".join(repr(char) for char in sorted(found))
+
+
 def run_command(
     argv: list[str], cwd: str | Path | None = None, timeout: int = 10
 ) -> subprocess.CompletedProcess[str] | None:
+    resolved = resolve_ix_argv(argv)
+    if unsafe_for_cmd_shim(resolved):
+        # None is the existing "this did not run" answer and every caller already
+        # handles it. The hooks are best-effort context, so declining one query is
+        # a missed suggestion; running it is arbitrary execution.
+        return None
     try:
         return subprocess.run(
-            resolve_ix_argv(argv),
+            resolved,
             cwd=str(cwd) if cwd else None,
             capture_output=True,
             text=True,
             timeout=timeout,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    # ValueError too: an embedded NUL raises it out of subprocess on every
+    # platform, and it is not an OSError.
+    except (OSError, ValueError, subprocess.SubprocessError):
         return None
 
 
@@ -765,8 +805,14 @@ def build_write_warning(file_path: str, cwd: str | Path | None) -> str | None:
 
 def spawn_background_ix_ingest(file_path: str | Path, cwd: str | Path | None) -> None:
     """Fire-and-forget ix map on a single file path."""
+    # The most exposed argument in the plugin: a path the model just wrote, sent
+    # unattended, with both streams to DEVNULL. If it reached a shell here there
+    # would be nothing to see afterwards.
+    argv = resolve_ix_argv(["ix", "map", str(file_path)])
+    if unsafe_for_cmd_shim(argv):
+        return
     subprocess.Popen(
-        resolve_ix_argv(["ix", "map", str(file_path)]),
+        argv,
         cwd=str(cwd) if cwd else None,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
