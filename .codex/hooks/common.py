@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import functools
 import hashlib
 import json
 import os
@@ -148,19 +149,106 @@ def find_workspace_root(cwd: str | None) -> Path:
     return start
 
 
+def resolve_ix_argv(argv: list[str]) -> list[str]:
+    """Replace a leading bare `ix` with the resolved path to the executable.
+
+    On Windows the installer puts an `ix.CMD` shim on PATH. `subprocess` there
+    hands the command to CreateProcess, which — unlike the shell — does not
+    consult PATHEXT, so a bare "ix" matches no file on disk and every call dies
+    with `FileNotFoundError: [WinError 2]`. The same command typed into
+    PowerShell works, and `shutil.which("ix")` finds `ix.CMD` quite happily,
+    which is what made this look like the CLI was fine and only the hooks were
+    broken.
+
+    `shutil.which` DOES apply PATHEXT, so resolving through it and passing the
+    full path is the fix. POSIX is unaffected: `which` returns the same path the
+    kernel would have found anyway.
+
+    Falls back to the bare name when `ix` is not installed, so the caller still
+    gets the ordinary "not found" error rather than a confusing one from here.
+    """
+    if not argv or argv[0] != "ix":
+        return argv
+    return [_ix_executable(), *argv[1:]]
+
+
+@functools.lru_cache(maxsize=1)
+def _ix_executable() -> str:
+    resolved = shutil.which("ix")
+    # Not if it came from the working directory. On Windows shutil.which searches
+    # the current directory *first* unless NoDefaultCurrentDirectoryInExePath is
+    # set, which by default it is not -- so a repository committing an `ix.bat`
+    # at its root would be run by all five hooks the moment the repo is opened.
+    # Passing `path=` does not help: CPython inserts os.curdir whenever the
+    # command has no directory part, explicit path or not.
+    #
+    # That is not a hole this file inherited, it is one resolution would create.
+    # A bare "ix" is immune, because CreateProcess only ever appends `.exe` --
+    # which is also why the CLI could not be launched at all before this change,
+    # and why gaining PATHEXT means gaining `.bat`, `.cmd`, `.py` and the rest of
+    # it. A PATH hit is absolute; the current-directory hit is not.
+    #
+    # Falling back to the bare name rather than raising keeps the "not installed"
+    # path: on Windows the caller gets the ordinary not-found, which is exactly
+    # what it got before, and on POSIX which never returns a relative path.
+    if resolved is None or not os.path.isabs(resolved):
+        return "ix"
+    return resolved
+
+
+# Resolving the executable is what makes the hooks work on Windows, and it is
+# also what makes them reachable: `ix.CMD` is a batch file, and CreateProcess
+# runs those by handing the command line to `cmd.exe /c`. Every argument is then
+# parsed by a shell before the CLI sees it -- and subprocess quotes an argument
+# only when it contains whitespace, so `a&whoami` splits into two commands while
+# `a & whoami` does not. `%VAR%` is expanded either way.
+#
+# These arguments are not trusted: spawn_background_ix_ingest takes the path of
+# a file the model just wrote, and build_search_message takes a pattern lifted
+# out of a command the model ran. Before the resolution above, a bare "ix" could
+# not be launched on Windows at all, so this was unreachable there; afterwards it
+# is the ordinary path.
+#
+# Quoting correctly for cmd.exe is the trap CVE-2024-24576 was about, so this
+# refuses the input rather than trying to escape it. Same set and same reasoning
+# as `_unsafe_for_cmd_shim` in mcp/server.py -- deliberately duplicated, because
+# the installer copies the hooks and the MCP server to different places and
+# neither can import the other.
+_CMD_SHIM_SUFFIXES = (".cmd", ".bat")
+_CMD_METACHARACTERS = frozenset('&|<>^"%!\r\n')
+
+
+def unsafe_for_cmd_shim(argv: list[str]) -> str:
+    """The cmd.exe metacharacters in `argv`, if argv[0] routes through one."""
+    if not argv or not argv[0].lower().endswith(_CMD_SHIM_SUFFIXES):
+        return ""
+    found: set[str] = set()
+    for arg in argv:
+        found |= set(arg) & _CMD_METACHARACTERS
+    return " ".join(repr(char) for char in sorted(found))
+
+
 def run_command(
     argv: list[str], cwd: str | Path | None = None, timeout: int = 10
 ) -> subprocess.CompletedProcess[str] | None:
+    resolved = resolve_ix_argv(argv)
+    if unsafe_for_cmd_shim(resolved):
+        # None is the existing "this did not run" answer and every caller already
+        # handles it. The hooks are best-effort context, so declining one query is
+        # a missed suggestion; running it is arbitrary execution.
+        return None
     try:
         return subprocess.run(
-            argv,
+            resolved,
             cwd=str(cwd) if cwd else None,
             capture_output=True,
             text=True,
             timeout=timeout,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError):
+    # ValueError too: an embedded NUL raises it out of subprocess on every
+    # platform, and it is not an OSError.
+    except (OSError, ValueError, subprocess.SubprocessError):
         return None
 
 
@@ -736,8 +824,14 @@ def build_write_warning(file_path: str, cwd: str | Path | None) -> str | None:
 
 def spawn_background_ix_ingest(file_path: str | Path, cwd: str | Path | None) -> None:
     """Fire-and-forget ix map on a single file path."""
+    # The most exposed argument in the plugin: a path the model just wrote, sent
+    # unattended, with both streams to DEVNULL. If it reached a shell here there
+    # would be nothing to see afterwards.
+    argv = resolve_ix_argv(["ix", "map", str(file_path)])
+    if unsafe_for_cmd_shim(argv):
+        return
     subprocess.Popen(
-        ["ix", "map", str(file_path)],
+        argv,
         cwd=str(cwd) if cwd else None,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -747,7 +841,7 @@ def spawn_background_ix_ingest(file_path: str | Path, cwd: str | Path | None) ->
 
 def spawn_background_ix_map(cwd: str | Path | None) -> None:
     subprocess.Popen(
-        ["ix", "map"],
+        resolve_ix_argv(["ix", "map"]),
         cwd=str(cwd) if cwd else None,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
