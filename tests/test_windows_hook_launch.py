@@ -24,7 +24,7 @@ import tempfile
 import unittest
 import uuid
 from contextlib import redirect_stdout
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -87,7 +87,11 @@ class Rewrite(unittest.TestCase):
         self._os_name = os.name
         self._executable = sys.executable
         self._dir = tempfile.TemporaryDirectory()
-        self.tmp = Path(self._dir.name)
+        # .resolve(): on Windows tempfile can hand back an 8.3 short path
+        # (C:\Users\RUNNER~1\...), while find_hook and the installer resolve to the
+        # long form. Comparing the two fails only on a runner whose profile name
+        # is long enough to be shortened -- never on a developer box.
+        self.tmp = Path(self._dir.name).resolve()
         self.target = self.tmp / "hooks.json"
         self.target.write_text(
             SHIPPED_HOOKS_JSON.read_text(encoding="utf-8"), encoding="utf-8"
@@ -163,7 +167,11 @@ class Rewrite(unittest.TestCase):
         """#349 is a live report from a profile at `C:\\Users\\Win 10`."""
         os.name = "nt"
         sys.executable = r"C:\Users\Win 10\Python\python.exe"
-        launch = Path(r"C:\Users\Win 10\.codex\hooks\_launch.py")
+        # PureWindowsPath, not Path: Path picks its flavour from os.name, which
+        # this test has just patched to "nt", so on POSIX it tries to build a
+        # WindowsPath. That raises NotImplementedError on Python 3.11 and only
+        # stopped raising in 3.12 -- green locally, red on a 3.11 runner.
+        launch = PureWindowsPath(r"C:\Users\Win 10\.codex\hooks\_launch.py")
         payload = json.loads(installer.render_hooks_json(self.target, launch))
         command = payload["hooks"]["SessionStart"][0]["hooks"][0]["command"]
         self.assertTrue(command.startswith(r'"C:\Users\Win 10\Python\python.exe" '))
@@ -217,7 +225,7 @@ class InstallHooksEndToEnd(unittest.TestCase):
     def setUp(self) -> None:
         self._dir = tempfile.TemporaryDirectory()
         self.addCleanup(self._dir.cleanup)
-        self.target = Path(self._dir.name) / "workspace"
+        self.target = Path(self._dir.name).resolve() / "workspace"
         self.target.mkdir()
 
     def install(self):
@@ -330,7 +338,7 @@ class InstallRendered(unittest.TestCase):
 class Launcher(unittest.TestCase):
     def setUp(self) -> None:
         self._dir = tempfile.TemporaryDirectory()
-        self.tmp = Path(self._dir.name)
+        self.tmp = Path(self._dir.name).resolve()  # 8.3 short paths; see Rewrite
         self._cwd = Path.cwd()
         self._env = {k: os.environ.get(k) for k in ("HOME", "USERPROFILE")}
         self._argv = sys.argv
