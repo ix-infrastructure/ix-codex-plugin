@@ -17,6 +17,17 @@ import subprocess
 import threading
 from typing import Optional
 
+try:
+    from ix_llm import try_llm
+except ImportError:  # pragma: no cover - degraded but functional
+    # `ix_llm.py` is installed beside this file by install_mcp(). If it is
+    # absent — a hand-copied server.py, a partial install, an older layout —
+    # every read tool falls back to the JSON path it used before the fast-path
+    # existed. An ImportError here would instead take down all 23 tools to save
+    # tokens on some of them, which is not a trade worth making.
+    def try_llm(*_args: object, **_kwargs: object) -> Optional[str]:
+        return None
+
 # The MCP Python SDK renamed FastMCP to MCPServer in 2.0.0 and moved it from
 # mcp.server.fastmcp to mcp.server.mcpserver. Nothing in this repo installs or
 # pins the SDK — the installer copies this file and prints a `codex mcp add`
@@ -205,6 +216,35 @@ def _err(tool: str, cmd: str, stderr: str = "") -> str:
     return json.dumps({"error": msg, "tool": tool})
 
 
+def _read(tool: str, cmd: str, args: list[str], timeout: int = 15) -> str:
+    """Run a read command, preferring `--format llm` where the CLI supports it.
+
+    These tools parsed JSON only to hand it straight back to the model through
+    `_ok`, which re-serialises it with `indent=2` — so the round trip made the
+    payload *larger* than it arrived. `--format llm` is the same content
+    rendered 2-4x smaller.
+
+    The fast-path is gated per command on the installed CLI's version, because
+    `--format llm` landed tier by tier and an older `ix` answers it with human
+    text rather than an error (see mcp/ix_llm.py). Anything that is not a
+    confident success — unsupported command, old CLI, failed probe, empty
+    output, an `error code=` record — returns None there and lands on the JSON
+    path below, unchanged.
+
+    Pro commands do come through here -- `ix_decisions` calls this -- and are
+    kept off the fast-path by their absence from the version table, not by
+    avoiding this helper. `@ix/pro` ships no llm renderer at any version, so
+    the omission is permanent rather than a floor waiting to be met.
+    """
+    fast = try_llm(args, _run, timeout=timeout)
+    if fast is not None:
+        return fast
+    data = _json(args, timeout)
+    if data is None:
+        return _err(tool, cmd)
+    return _ok(data)
+
+
 # ── Tools ─────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -233,10 +273,7 @@ def ix_briefing() -> str:
 @mcp.tool()
 def ix_locate(symbol: str) -> str:
     """Resolve a symbol to its canonical graph-backed target."""
-    data = _json(["locate", symbol])
-    if data is None:
-        return _err("ix_locate", f"ix locate {symbol}")
-    return _ok(data)
+    return _read("ix_locate", f"ix locate {symbol}", ["locate", symbol])
 
 
 @mcp.tool()
@@ -252,19 +289,21 @@ def ix_text(
         args += ["--path", path]
     if language:
         args += ["--language", language]
-    data = _json(args)
-    if data is None:
-        return _err("ix_text", f"ix text {pattern}")
-    return _ok(data)
+    return _read("ix_text", f"ix text {pattern}", args)
 
 
 @mcp.tool()
 def ix_impact(target: str) -> str:
-    """Analyze the blast radius of a symbol or file — returns risk_level, dependents, and recommended_action."""
-    data = _json(["impact", target])
-    if data is None:
-        return _err("ix_impact", f"ix impact {target}")
-    return _ok(data)
+    """Analyze the blast radius of a symbol or file — risk level and what depends on it.
+
+    Field names are deliberately not promised here. On a current CLI this returns
+    the compact llm rendering, which spells risk as `risk=` and omits a
+    recommended-action field entirely; on an older one it returns the JSON
+    object with `risk_level`/`dependents`/`recommended_action`. A docstring is
+    the model's contract, so naming keys only one of the two paths produces is a
+    promise this tool cannot keep.
+    """
+    return _read("ix_impact", f"ix impact {target}", ["impact", target])
 
 
 @mcp.tool()
@@ -284,20 +323,18 @@ def ix_map(file: Optional[str] = None) -> str:
 
 @mcp.tool()
 def ix_overview(target: str) -> str:
-    """Return a structural overview of a symbol or file — children, key items, and hierarchy position."""
-    data = _json(["overview", target])
-    if data is None:
-        return _err("ix_overview", f"ix overview {target}")
-    return _ok(data)
+    """Return a structural overview of a symbol or file — its shape and where it sits.
+
+    The llm rendering is a compressed record form; it does not reproduce every
+    key the JSON object carries.
+    """
+    return _read("ix_overview", f"ix overview {target}", ["overview", target])
 
 
 @mcp.tool()
 def ix_read(symbol: str) -> str:
     """Read the source content of a symbol via the graph (bounds raw file reads to graph-known symbols)."""
-    data = _json(["read", symbol])
-    if data is None:
-        return _err("ix_read", f"ix read {symbol}")
-    return _ok(data)
+    return _read("ix_read", f"ix read {symbol}", ["read", symbol])
 
 
 @mcp.tool()
@@ -313,55 +350,37 @@ def ix_diff(
         args.append(target)
     if summary:
         args.append("--summary")
-    data = _json(args)
-    if data is None:
-        return _err("ix_diff", f"ix diff {from_rev}..{to_rev}")
-    return _ok(data)
+    return _read("ix_diff", f"ix diff {from_rev}..{to_rev}", args)
 
 
 @mcp.tool()
 def ix_callers(symbol: str) -> str:
     """List entities that call a symbol (incoming call edges)."""
-    data = _json(["callers", symbol])
-    if data is None:
-        return _err("ix_callers", f"ix callers {symbol}")
-    return _ok(data)
+    return _read("ix_callers", f"ix callers {symbol}", ["callers", symbol])
 
 
 @mcp.tool()
 def ix_callees(symbol: str) -> str:
     """List entities called by a symbol (outgoing call edges)."""
-    data = _json(["callees", symbol])
-    if data is None:
-        return _err("ix_callees", f"ix callees {symbol}")
-    return _ok(data)
+    return _read("ix_callees", f"ix callees {symbol}", ["callees", symbol])
 
 
 @mcp.tool()
 def ix_imported_by(symbol: str) -> str:
     """List files or symbols that import a given symbol (incoming import edges)."""
-    data = _json(["imported-by", symbol])
-    if data is None:
-        return _err("ix_imported_by", f"ix imported-by {symbol}")
-    return _ok(data)
+    return _read("ix_imported_by", f"ix imported-by {symbol}", ["imported-by", symbol])
 
 
 @mcp.tool()
 def ix_imports(symbol: str) -> str:
     """List symbols or files imported by a given symbol (outgoing import edges)."""
-    data = _json(["imports", symbol])
-    if data is None:
-        return _err("ix_imports", f"ix imports {symbol}")
-    return _ok(data)
+    return _read("ix_imports", f"ix imports {symbol}", ["imports", symbol])
 
 
 @mcp.tool()
 def ix_depends(symbol: str, depth: int = 2) -> str:
     """Show the downstream dependency graph for a symbol up to a given depth (default 2)."""
-    data = _json(["depends", symbol, "--depth", str(depth)])
-    if data is None:
-        return _err("ix_depends", f"ix depends {symbol}")
-    return _ok(data)
+    return _read("ix_depends", f"ix depends {symbol}", ["depends", symbol, "--depth", str(depth)])
 
 
 @mcp.tool()
@@ -370,19 +389,18 @@ def ix_trace(symbol: str, to: Optional[str] = None) -> str:
     args = ["trace", symbol]
     if to:
         args += ["--to", to]
-    data = _json(args)
-    if data is None:
-        return _err("ix_trace", f"ix trace {symbol}")
-    return _ok(data)
+    return _read("ix_trace", f"ix trace {symbol}", args)
 
 
 @mcp.tool()
 def ix_explain(symbol: str) -> str:
-    """Explain a symbol's role, importance, callers, and callees using graph data."""
-    data = _json(["explain", symbol])
-    if data is None:
-        return _err("ix_explain", f"ix explain {symbol}")
-    return _ok(data)
+    """Explain a symbol's role, importance, and callers using graph data.
+
+    Callees are reported as a count rather than a list: the llm rendering emits
+    `edges callees=<n>`, and the names are only available under `--raw`, which
+    this does not pass.
+    """
+    return _read("ix_explain", f"ix explain {symbol}", ["explain", symbol])
 
 
 @mcp.tool()
@@ -396,19 +414,13 @@ def ix_rank(
     args = ["rank", "--by", by, "--kind", kind, "--top", str(top)]
     if path:
         args += ["--path", path]
-    data = _json(args)
-    if data is None:
-        return _err("ix_rank", "ix rank")
-    return _ok(data)
+    return _read("ix_rank", "ix rank", args)
 
 
 @mcp.tool()
 def ix_inventory(path: str, kind: str = "file") -> str:
     """List files or symbols within a repository path scope."""
-    data = _json(["inventory", "--kind", kind, "--path", path])
-    if data is None:
-        return _err("ix_inventory", f"ix inventory {path}")
-    return _ok(data)
+    return _read("ix_inventory", f"ix inventory {path}", ["inventory", "--kind", kind, "--path", path])
 
 
 @mcp.tool()
@@ -427,20 +439,18 @@ def ix_smells(path: Optional[str] = None, limit: int = 50) -> str:
 
 @mcp.tool()
 def ix_stats() -> str:
-    """Return graph-wide ix statistics for files, symbols, and graph health."""
-    data = _json(["stats"])
-    if data is None:
-        return _err("ix_stats", "ix stats")
-    return _ok(data)
+    """Return graph-wide ix statistics.
+
+    The llm rendering reports node and edge counts and drops zero-valued
+    categories, so this is a summary rather than the full JSON breakdown.
+    """
+    return _read("ix_stats", "ix stats", ["stats"])
 
 
 @mcp.tool()
 def ix_subsystems() -> str:
     """List graph-derived subsystems for top-level repository orientation."""
-    data = _json(["subsystems"])
-    if data is None:
-        return _err("ix_subsystems", "ix subsystems")
-    return _ok(data)
+    return _read("ix_subsystems", "ix subsystems", ["subsystems"])
 
 
 @mcp.tool()
@@ -449,19 +459,13 @@ def ix_decisions(path: Optional[str] = None) -> str:
     args = ["decisions"]
     if path:
         args += ["--path", path]
-    data = _json(args)
-    if data is None:
-        return _err("ix_decisions", "ix decisions")
-    return _ok(data)
+    return _read("ix_decisions", "ix decisions", args)
 
 
 @mcp.tool()
 def ix_history(target: str) -> str:
     """Show the provenance/patch history for a file or symbol."""
-    data = _json(["history", target])
-    if data is None:
-        return _err("ix_history", f"ix history {target}")
-    return _ok(data)
+    return _read("ix_history", f"ix history {target}", ["history", target])
 
 
 if __name__ == "__main__":

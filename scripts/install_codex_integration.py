@@ -786,12 +786,16 @@ def install_plugin(
 
 def install_mcp(target_root: Path, mode: str, force: bool) -> list[Path]:
     installed: list[Path] = []
-    mcp_source = repo_root() / "mcp" / "server.py"
     mcp_dest_dir = target_root / ".codex" / "mcp"
-    mcp_dest = mcp_dest_dir / "server.py"
     mcp_dest_dir.mkdir(parents=True, exist_ok=True)
-    install_file(mcp_source, mcp_dest, mode, force)
-    installed.append(mcp_dest)
+    # server.py imports `ix_llm` as a sibling, so both have to land. The import
+    # is guarded on the server side, so a stale install that has only server.py
+    # loses the `--format llm` fast-path rather than failing to start — but
+    # shipping the pair is what makes the fast-path available at all.
+    for name in ("server.py", "ix_llm.py"):
+        dest = mcp_dest_dir / name
+        install_file(repo_root() / "mcp" / name, dest, mode, force)
+        installed.append(dest)
     return installed
 
 

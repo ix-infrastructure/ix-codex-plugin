@@ -57,6 +57,7 @@ python3 -m py_compile \
   "$REPO/.codex/hooks/pre_tool_use.py" \
   "$REPO/.codex/hooks/post_tool_use.py" \
   "$REPO/.codex/hooks/stop.py" \
+  "$REPO/mcp/ix_llm.py" \
   "$REPO/.codex/hooks/_launch.py" \
   "$REPO/scripts/install_codex_integration.py" \
   "$REPO/mcp/server.py" >/dev/null \
@@ -161,7 +162,7 @@ else:
 # stub `ix` on PATH that reports the argv it was handed, under both MCP SDK
 # major versions.
 python3 "$REPO/tests/test_mcp_cli_invocation.py" >/dev/null 2>&1 \
-  && ok "MCP tools invoke the ix CLI and request JSON" \
+  && ok "MCP tools invoke the ix CLI and request a machine format" \
   || fail "MCP tool invocation check failed"
 
 
@@ -183,6 +184,15 @@ python3 "$REPO/tests/test_installer_toml.py" >/dev/null 2>&1 \
 python3 "$REPO/tests/test_windows_hook_launch.py" >/dev/null 2>&1 \
   && ok "hooks launch without a shell on Windows" \
   || fail "Windows hook-launch check failed"
+
+# `ix` does not validate --format: an unknown value falls through to human text
+# and exits 0. So asking an old CLI for `llm` never errors -- it silently
+# answers with prose. The per-command version floors are the only thing standing
+# between that and records being expected. Tier 5 (explain, read) landed in
+# 0.9.2, everything else in 0.7.0, and Pro commands have no llm renderer at all.
+python3 "$REPO/tests/test_llm_fastpath.py" >/dev/null 2>&1 \
+  && ok "llm fast-path is gated on the CLI version" \
+  || fail "llm fast-path gate check failed"
 
 echo ""
 echo "-- _scrub_secrets unit tests --"
