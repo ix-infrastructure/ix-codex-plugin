@@ -303,6 +303,30 @@ class InstallHooksEndToEnd(unittest.TestCase):
         )
 
 
+class InstallRendered(unittest.TestCase):
+    """The write path hooks.json takes on Windows, which bypasses install_file."""
+
+    def setUp(self) -> None:
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.target = Path(self._dir.name) / "nested" / "hooks.json"
+
+    def test_matching_content_is_a_no_op(self) -> None:
+        installer.install_rendered(self.target, "same", force=False)
+        installer.install_rendered(self.target, "same", force=False)
+        self.assertEqual("same", self.target.read_text(encoding="utf-8"))
+
+    def test_differing_content_needs_force(self) -> None:
+        installer.install_rendered(self.target, "first", force=False)
+        with self.assertRaises(FileExistsError):
+            installer.install_rendered(self.target, "second", force=False)
+        self.assertEqual(
+            "first", self.target.read_text(encoding="utf-8"), "content was clobbered"
+        )
+        installer.install_rendered(self.target, "second", force=True)
+        self.assertEqual("second", self.target.read_text(encoding="utf-8"))
+
+
 class Launcher(unittest.TestCase):
     def setUp(self) -> None:
         self._dir = tempfile.TemporaryDirectory()
