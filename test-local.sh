@@ -79,6 +79,13 @@ else
   printf '%s\n' "$ups_out" | sed 's/^/      /'
 fi
 
+if argv_out=$(python3 "$REPO/tests/test_ix_argv_resolution.py" 2>&1); then
+  ok "ix invocations resolve through PATHEXT and refuse cmd metacharacters"
+else
+  fail "ix argv resolution tests failed"
+  printf '%s\n' "$argv_out" | sed 's/^/      /'
+fi
+
 echo ""
 echo "-- hooks.json event coverage --"
 
