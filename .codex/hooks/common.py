@@ -174,7 +174,26 @@ def resolve_ix_argv(argv: list[str]) -> list[str]:
 
 @functools.lru_cache(maxsize=1)
 def _ix_executable() -> str:
-    return shutil.which("ix") or "ix"
+    resolved = shutil.which("ix")
+    # Not if it came from the working directory. On Windows shutil.which searches
+    # the current directory *first* unless NoDefaultCurrentDirectoryInExePath is
+    # set, which by default it is not -- so a repository committing an `ix.bat`
+    # at its root would be run by all five hooks the moment the repo is opened.
+    # Passing `path=` does not help: CPython inserts os.curdir whenever the
+    # command has no directory part, explicit path or not.
+    #
+    # That is not a hole this file inherited, it is one resolution would create.
+    # A bare "ix" is immune, because CreateProcess only ever appends `.exe` --
+    # which is also why the CLI could not be launched at all before this change,
+    # and why gaining PATHEXT means gaining `.bat`, `.cmd`, `.py` and the rest of
+    # it. A PATH hit is absolute; the current-directory hit is not.
+    #
+    # Falling back to the bare name rather than raising keeps the "not installed"
+    # path: on Windows the caller gets the ordinary not-found, which is exactly
+    # what it got before, and on POSIX which never returns a relative path.
+    if resolved is None or not os.path.isabs(resolved):
+        return "ix"
+    return resolved
 
 
 # Resolving the executable is what makes the hooks work on Windows, and it is

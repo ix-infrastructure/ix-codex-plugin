@@ -17,6 +17,7 @@ the standard library's job, not ours.
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 import unittest
@@ -34,7 +35,18 @@ def _load_common():
     return module
 
 
-WINDOWS_SHIM = r"C:\Users\Win 10\AppData\Local\ix\bin\ix.CMD"
+# A resolved `.CMD` shim, spelled absolutely for whichever platform is running.
+# It has to be genuinely absolute, not merely Windows-shaped: `_ix_executable`
+# discards a relative resolution (that is the current-directory hijack guard),
+# and `C:\...` is not absolute under POSIX rules, so a hardcoded Windows path
+# would be thrown away on Linux and every assertion below would then be checking
+# the unresolved fallback instead. The `.CMD` suffix is the part that matters —
+# it is what routes through cmd.exe.
+WINDOWS_SHIM = (
+    r"C:\Users\Win 10\AppData\Local\ix\bin\ix.CMD"
+    if os.name == "nt"
+    else "/opt/ix bin/ix.CMD"
+)
 
 
 class IxArgvResolutionTest(unittest.TestCase):
@@ -111,8 +123,52 @@ class IxArgvResolutionTest(unittest.TestCase):
     # `cmd.exe /c`, and subprocess quotes an argument only when it contains
     # whitespace. Before resolution a bare "ix" could not launch at all there.
 
+    def test_a_working_directory_ix_is_never_resolved(self) -> None:
+        """Resolution must not buy PATHEXT at the cost of the current directory.
+
+        On Windows shutil.which searches the CWD first unless
+        NoDefaultCurrentDirectoryInExePath is set, which by default it is not --
+        so a repo committing `ix.bat` at its root would be run by every hook on
+        open. A bare "ix" is immune (CreateProcess only appends `.exe`), so this
+        would be a hole resolution *created*. A PATH hit is absolute.
+        """
+        for relative in (r".\ix.BAT", "ix.CMD", r"sub\ix.bat"):
+            with self.subTest(relative):
+                with patch.object(
+                    self.common.shutil, "which", return_value=relative
+                ):
+                    self.common._ix_executable.cache_clear()
+                    self.assertEqual(
+                        ["ix", "status"],
+                        self.common.resolve_ix_argv(["ix", "status"]),
+                        "a relative resolution must be discarded, not executed",
+                    )
+        # Control: an absolute hit is still used, or the above passes vacuously.
+        with patch.object(self.common.shutil, "which", return_value=WINDOWS_SHIM):
+            self.common._ix_executable.cache_clear()
+            self.assertEqual(
+                [WINDOWS_SHIM, "status"], self.common.resolve_ix_argv(["ix", "status"])
+            )
+
+    def test_the_executable_itself_is_scanned(self) -> None:
+        """list2cmdline leaves an unquoted path alone, so `C:\\a&b\\ix.cmd` splits."""
+        self.assertNotEqual(
+            "", self.common.unsafe_for_cmd_shim([r"C:\a&b\ix.cmd", "status"])
+        )
+
     def test_a_shell_metacharacter_stops_the_call(self) -> None:
-        for argument in ("a&whoami", "a|whoami", "a>out", "%USERNAME%", "a!V!"):
+        for argument in (
+            "a&whoami",
+            "a|whoami",
+            "a>out",
+            "a<in",
+            "a^b",
+            'a"b',
+            "%USERNAME%",
+            "a!V!",
+            "a\rwhoami",
+            "a\nwhoami",
+        ):
             with self.subTest(argument):
                 with patch.object(
                     self.common.shutil, "which", return_value=WINDOWS_SHIM
