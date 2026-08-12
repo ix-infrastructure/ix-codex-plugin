@@ -158,7 +158,7 @@ Hooks:
 - `.codex/hooks/stop.py`
 
 MCP:
-- `.codex/mcp/server.py`
+- registered with Codex as `ix-memory`, served by the Ix CLI (`ix mcp`) — no file is installed
 
 ### Home-local install
 
@@ -172,7 +172,6 @@ This writes:
 - `~/.codex/config.toml`
 - `~/.codex/hooks.json`
 - `~/.codex/hooks/*.py`
-- `~/.codex/mcp/server.py`
 
 ### Repo-local install
 
@@ -186,7 +185,6 @@ This writes:
 - `/path/to/project/.codex/config.toml`
 - `/path/to/project/.codex/hooks.json`
 - `/path/to/project/.codex/hooks/*.py`
-- `/path/to/project/.codex/mcp/server.py`
 
 ### Symlink mode for local development
 

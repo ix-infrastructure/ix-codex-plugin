@@ -57,10 +57,8 @@ python3 -m py_compile \
   "$REPO/.codex/hooks/pre_tool_use.py" \
   "$REPO/.codex/hooks/post_tool_use.py" \
   "$REPO/.codex/hooks/stop.py" \
-  "$REPO/mcp/ix_llm.py" \
   "$REPO/.codex/hooks/_launch.py" \
-  "$REPO/scripts/install_codex_integration.py" \
-  "$REPO/mcp/server.py" >/dev/null \
+  "$REPO/scripts/install_codex_integration.py" >/dev/null \
   && ok "Python files compile" || fail "Python compile failed"
 
 # Show the failures rather than swallowing them: `>/dev/null 2>&1` leaves a
@@ -119,51 +117,25 @@ POST_OUT="$(printf '{"cwd":"%s","tool_input":{"command":"echo hello > /tmp/ix-te
 ok "post_tool_use: dry-run completed without error"
 
 echo ""
-echo "-- MCP server checks --"
+echo "-- MCP registration checks --"
 
+# This plugin no longer ships an MCP server: `ix mcp` in the CLI serves the same
+# tools, so there is nothing here to introspect. What still has to hold is that
+# the installer delegates instead of copying a server, and that it refuses to
+# register against a CLI too old to have the subcommand.
 python3 -c "
-import sys
-sys.path.insert(0, '$REPO/.codex/hooks')
-# The SDK must be importable for the server to work, under either of its names.
-# 2.0.0 renamed FastMCP to MCPServer and moved it to mcp.server.mcpserver; this
-# check pinned the v1 path, so it reported a missing package on a machine where
-# the package was installed and current.
-try:
-    from mcp.server.mcpserver import MCPServer
-    print('  [ok] mcp package importable (>= 2.0.0)')
-except ImportError:
-    try:
-        from mcp.server.fastmcp import FastMCP
-        print('  [ok] mcp package importable (< 2.0.0)')
-    except ImportError:
-        print('  [FAIL] mcp package not installed (pip install mcp)')
-        sys.exit(1)
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('inst', '$REPO/scripts/install_codex_integration.py')
+mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
 
-# Verify server.py registers at least 20 tools
-import asyncio, importlib.util
-spec = importlib.util.spec_from_file_location('mcp_server', '$REPO/mcp/server.py')
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-# list_tools(), not the _tool_manager._tools it used to read: a private
-# attribute is exactly what a major version is free to move, and this test
-# exists to catch that class of break rather than take part in it.
-tool_count = len(asyncio.run(mod.mcp.list_tools()))
-if tool_count >= 20:
-    print(f'  [ok] MCP server registers {tool_count} tools')
-else:
-    print(f'  [FAIL] MCP server only registers {tool_count} tools (expected >= 20)')
-    sys.exit(1)
-" 2>/dev/null && true || fail "MCP server check failed"
+if mod.install_mcp(None, 'copy', False) != []:
+    print('  [FAIL] install_mcp still installs files'); sys.exit(1)
+print('  [ok] install_mcp copies no server of its own')
 
-# Registering tools says nothing about whether they can run. Every tool but
-# ix_health used to omit the `ix` executable and try to exec a program named
-# after the subcommand, and _json parsed stdout as JSON without ever asking for
-# it. Both are invisible to a count, so tests/ drives all 23 tools against a
-# stub `ix` on PATH that reports the argv it was handed, under both MCP SDK
-# major versions.
-python3 "$REPO/tests/test_mcp_cli_invocation.py" >/dev/null 2>&1 \
-  && ok "MCP tools invoke the ix CLI and request a machine format" \
-  || fail "MCP tool invocation check failed"
+if mod.MIN_IX_VERSION_FOR_MCP < (0, 9, 3):
+    print('  [FAIL] version floor predates the ix mcp subcommand'); sys.exit(1)
+print(f'  [ok] requires ix >= {\".\".join(str(p) for p in mod.MIN_IX_VERSION_FOR_MCP)}')
+" && ok "installer delegates MCP to the ix CLI" || fail "MCP delegation check failed"
 
 
 echo ""
@@ -185,14 +157,6 @@ python3 "$REPO/tests/test_windows_hook_launch.py" >/dev/null 2>&1 \
   && ok "hooks launch without a shell on Windows" \
   || fail "Windows hook-launch check failed"
 
-# `ix` does not validate --format: an unknown value falls through to human text
-# and exits 0. So asking an old CLI for `llm` never errors -- it silently
-# answers with prose. The per-command version floors are the only thing standing
-# between that and records being expected. Tier 5 (explain, read) landed in
-# 0.9.2, everything else in 0.7.0, and Pro commands have no llm renderer at all.
-python3 "$REPO/tests/test_llm_fastpath.py" >/dev/null 2>&1 \
-  && ok "llm fast-path is gated on the CLI version" \
-  || fail "llm fast-path gate check failed"
 
 echo ""
 echo "-- _scrub_secrets unit tests --"

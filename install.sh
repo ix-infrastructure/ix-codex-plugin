@@ -22,7 +22,7 @@ Examples:
 Flags:
   --plugin   Copy/register the ix-memory Codex plugin in a local marketplace
   --hooks    Install the .codex hook bundle (session, prompt, pre/post tool, stop)
-  --mcp      Install the ix-memory MCP server and print the codex mcp add command
+  --mcp      Register the Ix CLI's MCP server (`ix mcp`) with Codex
 
 Notes:
   - If none of --plugin, --hooks, or --mcp is passed, the installer defaults to
