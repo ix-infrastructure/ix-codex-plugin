@@ -16,15 +16,23 @@ the standard library's job, not ours.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
+import io
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
 HOOKS_DIR = Path(__file__).resolve().parents[1] / ".codex" / "hooks"
+# Scanned by the argv guard too: the installer spawns `ix` as well, and the
+# guard covering only the hooks is exactly how the --mcp path came to spawn
+# the bare name.
+INSTALLER_PATH = Path(__file__).resolve().parents[1] / "scripts" / "install_codex_integration.py"
 
 
 def _load_common():
@@ -47,6 +55,15 @@ WINDOWS_SHIM = (
     if os.name == "nt"
     else "/opt/ix bin/ix.CMD"
 )
+
+
+def load_installer():
+    spec = importlib.util.spec_from_file_location("ix_installer_argv", INSTALLER_PATH)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["ix_installer_argv"] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 class IxArgvResolutionTest(unittest.TestCase):
@@ -212,17 +229,90 @@ class IxArgvResolutionTest(unittest.TestCase):
         If a caller ever builds an argv some other way, it silently skips the
         resolver and regresses on Windows only.
         """
-        sources = list(HOOKS_DIR.glob("*.py"))
+        sources = list(HOOKS_DIR.glob("*.py")) + [INSTALLER_PATH]
         self.assertTrue(sources, "no hook sources found")
         offenders = []
         for path in sources:
-            for lineno, line in enumerate(path.read_text().splitlines(), 1):
-                stripped = line.strip()
-                if stripped.startswith("#"):
+            tree = ast.parse(path.read_text())
+            for node in ast.walk(tree):
+                # The real shape, not a line-grep. Grepping for `"ix"` and
+                # `subprocess.` on one line reads prose as code — a docstring
+                # explaining that `subprocess.run(["ix", ...])` is wrong scored as
+                # an offender — and reads code as prose the moment a call is split
+                # across lines, which is the direction that actually costs
+                # something.
+                if not isinstance(node, ast.Call):
                     continue
-                if '"ix"' in stripped and "subprocess." in stripped:
-                    offenders.append(f"{path.name}:{lineno}")
+                func = node.func
+                if not (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)):
+                    continue
+                if func.value.id != "subprocess":
+                    continue
+                if not node.args:
+                    continue
+                argv = node.args[0]
+                if not isinstance(argv, (ast.List, ast.Tuple)) or not argv.elts:
+                    continue
+                head = argv.elts[0]
+                if isinstance(head, ast.Constant) and head.value == "ix":
+                    offenders.append(f"{path.name}:{node.lineno}")
         self.assertEqual([], offenders, "argv passed straight to subprocess without resolve_ix_argv")
+
+
+class InstallerIxLaunchTest(unittest.TestCase):
+    """`--mcp` registers by running the CLI, so it has to reach it on Windows.
+
+    The registration itself is right to delegate — `ix mcp install` resolves the
+    launcher for each host it writes. But reaching *that* has the same problem one
+    level up: a bare "ix" dies in CreateProcess before `check=False` is consulted,
+    so the flag prints its banner and then raises, having registered nothing.
+    """
+
+    def setUp(self) -> None:
+        self.installer = load_installer()
+
+    def _run_mcp(self, which_returns: str | None, version_stdout: str = "ix 0.9.3"):
+        """Drive `main()` down the --mcp path, returning the spawned argvs."""
+        calls: list[list[str]] = []
+
+        def fake_run(argv, *args, **kwargs):
+            calls.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0, stdout=version_stdout, stderr="")
+
+        with tempfile.TemporaryDirectory() as target:
+            argv = ["install_codex_integration.py", "--repo", target, "--mcp"]
+            with patch.object(self.installer.shutil, "which", return_value=which_returns), \
+                    patch.object(self.installer.subprocess, "run", fake_run), \
+                    patch.object(sys, "argv", argv), \
+                    redirect_stdout(io.StringIO()) as out:
+                self.installer.main()
+        return calls, out.getvalue()
+
+    def test_registers_with_the_resolved_path_not_the_bare_name(self) -> None:
+        calls, _ = self._run_mcp(WINDOWS_SHIM)
+        register = [c for c in calls if "mcp" in c]
+        self.assertEqual(1, len(register), f"expected one registration, got {calls}")
+        self.assertEqual(
+            [WINDOWS_SHIM, "mcp", "install", "--host", "codex"],
+            register[0],
+            "the bare name never resolves through CreateProcess on Windows",
+        )
+
+    def test_the_version_gate_and_the_registration_use_one_install(self) -> None:
+        """Two resolutions could gate on one `ix` and then register with another."""
+        calls, _ = self._run_mcp(WINDOWS_SHIM)
+        self.assertTrue(calls, "nothing was spawned")
+        self.assertEqual({WINDOWS_SHIM}, {c[0] for c in calls})
+
+    def test_says_so_rather_than_raising_when_ix_is_not_on_path(self) -> None:
+        calls, printed = self._run_mcp(None)
+        self.assertEqual([], [c for c in calls if "mcp" in c])
+        self.assertIn("install the Ix CLI", printed)
+
+    def test_refuses_a_cli_below_the_floor(self) -> None:
+        calls, printed = self._run_mcp(WINDOWS_SHIM, version_stdout="ix 0.9.2")
+        self.assertEqual([], [c for c in calls if "mcp" in c])
+        self.assertIn("0.9.3", printed)
 
 
 if __name__ == "__main__":

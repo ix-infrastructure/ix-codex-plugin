@@ -787,11 +787,29 @@ def install_plugin(
 MIN_IX_VERSION_FOR_MCP = (0, 9, 3)
 
 
-def _ix_version() -> tuple[int, ...] | None:
-    """The installed CLI's version, or None if `ix` is not runnable."""
+def _ix_executable() -> str | None:
+    """The `ix` on PATH, as an absolute path, or None if there is none.
+
+    Resolved rather than spawned by name because this script runs on Windows,
+    where npm ships no `ix.exe` — only `ix.CMD` — and CreateProcess consults no
+    PATHEXT, so `subprocess.run(["ix", ...])` raises FileNotFoundError however
+    well-formed the rest of the argv is. `shutil.which` DOES apply PATHEXT, so it
+    finds the shim. This is Ix#383's inner half, which `.codex/hooks/common.py`
+    already fixes for the hooks; every new `ix` call site has to do the same.
+    """
     executable = shutil.which("ix", path=os.environ.get("PATH"))
     if executable is None or not os.path.isabs(executable):
         return None
+    return executable
+
+
+def _ix_version(executable: str) -> tuple[int, ...] | None:
+    """The installed CLI's version, or None if it could not be read.
+
+    Takes the resolved path rather than resolving its own, so the version that
+    gates the registration and the binary that performs it cannot be two
+    different installs.
+    """
     try:
         out = subprocess.run(
             [executable, "--version"], capture_output=True, text=True, timeout=30
@@ -849,7 +867,8 @@ def main() -> None:
     if args.hooks:
         print("Restart Codex so it reloads .codex/config.toml and hooks.json.")
     if args.mcp:
-        version = _ix_version()
+        executable = _ix_executable()
+        version = _ix_version(executable) if executable is not None else None
         if version is None:
             print("Could not run `ix --version`; install the Ix CLI, then re-run with --mcp.")
         elif version < MIN_IX_VERSION_FOR_MCP:
@@ -858,9 +877,13 @@ def main() -> None:
             print(f"The MCP server needs Ix CLI >= {wanted} (found {got}). Run `ix upgrade`.")
         else:
             # `ix mcp install` owns the per-host detail — including resolving the
-            # launcher on Windows, where npm ships ix.CMD and no ix.exe.
+            # launcher for the seven hosts it registers, on the Windows where npm
+            # ships ix.CMD and no ix.exe. Reaching it has the same problem one
+            # level up, so the resolved path is what is spawned: the bare name
+            # would raise FileNotFoundError before `check=False` had any say, and
+            # the registration this flag exists to write would never happen.
             print("Registering the Ix MCP server with Codex:")
-            subprocess.run(["ix", "mcp", "install", "--host", "codex"], check=False)
+            subprocess.run([executable, "mcp", "install", "--host", "codex"], check=False)
 
 
 if __name__ == "__main__":
