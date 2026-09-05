@@ -63,7 +63,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mcp",
         action="store_true",
-        help="Install the ix-memory MCP server and print the codex mcp add registration command",
+        help="Register the Ix CLI's MCP server (`ix mcp`) with Codex",
     )
     parser.add_argument(
         "--mode",
@@ -784,19 +784,52 @@ def install_plugin(
     return installed
 
 
+MIN_IX_VERSION_FOR_MCP = (0, 9, 3)
+
+
+def _ix_executable() -> str | None:
+    """The `ix` on PATH, as an absolute path, or None if there is none.
+
+    Resolved rather than spawned by name because this script runs on Windows,
+    where npm ships no `ix.exe` — only `ix.CMD` — and CreateProcess consults no
+    PATHEXT, so `subprocess.run(["ix", ...])` raises FileNotFoundError however
+    well-formed the rest of the argv is. `shutil.which` DOES apply PATHEXT, so it
+    finds the shim. This is Ix#383's inner half, which `.codex/hooks/common.py`
+    already fixes for the hooks; every new `ix` call site has to do the same.
+    """
+    executable = shutil.which("ix", path=os.environ.get("PATH"))
+    if executable is None or not os.path.isabs(executable):
+        return None
+    return executable
+
+
+def _ix_version(executable: str) -> tuple[int, ...] | None:
+    """The installed CLI's version, or None if it could not be read.
+
+    Takes the resolved path rather than resolving its own, so the version that
+    gates the registration and the binary that performs it cannot be two
+    different installs.
+    """
+    try:
+        out = subprocess.run(
+            [executable, "--version"], capture_output=True, text=True, timeout=30
+        ).stdout
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", out)
+    return tuple(int(g) for g in match.groups()) if match else None
+
+
 def install_mcp(target_root: Path, mode: str, force: bool) -> list[Path]:
-    installed: list[Path] = []
-    mcp_dest_dir = target_root / ".codex" / "mcp"
-    mcp_dest_dir.mkdir(parents=True, exist_ok=True)
-    # server.py imports `ix_llm` as a sibling, so both have to land. The import
-    # is guarded on the server side, so a stale install that has only server.py
-    # loses the `--format llm` fast-path rather than failing to start — but
-    # shipping the pair is what makes the fast-path available at all.
-    for name in ("server.py", "ix_llm.py"):
-        dest = mcp_dest_dir / name
-        install_file(repo_root() / "mcp" / name, dest, mode, force)
-        installed.append(dest)
-    return installed
+    """Register the CLI's own MCP server rather than shipping one.
+
+    This plugin used to install `mcp/server.py`, a FastMCP server whose 23 tools
+    each shelled out to the `ix` CLI. The CLI now serves the same tools itself
+    via `ix mcp`, in-process, so the copy here was a second implementation of
+    one surface. Nothing is installed now; the CLI is pointed at instead.
+    """
+    del target_root, mode, force  # nothing is copied any more
+    return []
 
 
 def main() -> None:
@@ -834,9 +867,23 @@ def main() -> None:
     if args.hooks:
         print("Restart Codex so it reloads .codex/config.toml and hooks.json.")
     if args.mcp:
-        mcp_path = target_root / ".codex" / "mcp" / "server.py"
-        print(f"Register the MCP server with Codex:")
-        print(f"  codex mcp add ix-memory -- python3 {mcp_path}")
+        executable = _ix_executable()
+        version = _ix_version(executable) if executable is not None else None
+        if version is None:
+            print("Could not run `ix --version`; install the Ix CLI, then re-run with --mcp.")
+        elif version < MIN_IX_VERSION_FOR_MCP:
+            wanted = ".".join(str(part) for part in MIN_IX_VERSION_FOR_MCP)
+            got = ".".join(str(part) for part in version)
+            print(f"The MCP server needs Ix CLI >= {wanted} (found {got}). Run `ix upgrade`.")
+        else:
+            # `ix mcp install` owns the per-host detail — including resolving the
+            # launcher for the seven hosts it registers, on the Windows where npm
+            # ships ix.CMD and no ix.exe. Reaching it has the same problem one
+            # level up, so the resolved path is what is spawned: the bare name
+            # would raise FileNotFoundError before `check=False` had any say, and
+            # the registration this flag exists to write would never happen.
+            print("Registering the Ix MCP server with Codex:")
+            subprocess.run([executable, "mcp", "install", "--host", "codex"], check=False)
 
 
 if __name__ == "__main__":
