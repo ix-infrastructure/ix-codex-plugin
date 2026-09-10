@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright 2026 Ix Infrastructure INC
+# Copyright 2026 Ix Infrastructure Inc.
 
 """Locate and run an Ix Codex hook, without needing a shell.
 

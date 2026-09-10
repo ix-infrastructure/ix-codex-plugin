@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright 2026 Ix Infrastructure INC
+# Copyright 2026 Ix Infrastructure Inc.
 
 """ix-infrastructure/Ix#383, outer half: hooks could not launch on native Windows.
 
