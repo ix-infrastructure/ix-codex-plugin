@@ -1,3 +1,5 @@
+# Copyright 2026 Ix Infrastructure Inc.
+
 [CmdletBinding()]
 param(
     [Parameter(ValueFromRemainingArguments = $true)]

@@ -1,5 +1,7 @@
 # ix-codex-plugin
 
+[![Sponsor](https://img.shields.io/badge/sponsor-%E2%9D%A4-db61a2)](https://github.com/sponsors/ix-infrastructure)
+
 A Codex plugin that turns Codex into a graph-reasoning engineering agent using [Ix Memory](https://github.com/ix-infrastructure/Ix) as its structured memory backend.
 
 Codex + Ix = reasoning engine + persistent code knowledge graph. Skills are cognitive abstractions, not CLI wrappers.

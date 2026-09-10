@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2026 Ix Infrastructure Inc.
+
 from __future__ import annotations
 
 import argparse
