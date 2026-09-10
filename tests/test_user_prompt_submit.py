@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2026 Ix Infrastructure INC
+
 """How many times the UserPromptSubmit hook runs `ix briefing`, and when.
 
 The Pro probe used to be `ix briefing --help` — free, and safe to call before

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2026 Ix Infrastructure INC
+
 from __future__ import annotations
 
 from common import (

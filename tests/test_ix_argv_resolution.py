@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2026 Ix Infrastructure INC
+
 """Every `ix` invocation must reach the executable on Windows too.
 
 The installer puts an `ix.CMD` shim on PATH. `subprocess` on Windows hands the

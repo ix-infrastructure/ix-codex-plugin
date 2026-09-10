@@ -1,3 +1,5 @@
+# Copyright 2026 Ix Infrastructure INC
+
 from __future__ import annotations
 
 import concurrent.futures
