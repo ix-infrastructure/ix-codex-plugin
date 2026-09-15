@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2026 Ix Infrastructure Inc.
+
 """Locate and run an Ix Codex hook, without needing a shell.
 
 Every entry in ``hooks.json`` used to be a ``/bin/sh -lc '...'`` one-liner that

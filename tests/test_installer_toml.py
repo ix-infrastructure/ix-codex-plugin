@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2026 Ix Infrastructure Inc.
+
 """The installer's config.toml edit has to leave the file loadable.
 
 `ensure_codex_hooks_enabled` used to test `"codex_hooks = true" in text` and,

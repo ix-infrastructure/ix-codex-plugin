@@ -1,4 +1,6 @@
 #!/bin/sh
+# Copyright 2026 Ix Infrastructure Inc.
+
 set -eu
 
 GITHUB_ORG="ix-infrastructure"

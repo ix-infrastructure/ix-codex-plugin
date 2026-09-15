@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2026 Ix Infrastructure Inc.
+
 """Pro-detection probe: what it caches, and — more importantly — what it does not.
 
 The probe runs a real Pro command rather than `ix briefing --help`, because
