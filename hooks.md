@@ -8,9 +8,29 @@ This repo ports the `ix-claude-plugin` hook model into Codex's hook runtime.
 |---|---|---|
 | `SessionStart` | `.codex/hooks/session_start.py` | Inject the Ix operating model and graph-first rules |
 | `UserPromptSubmit` | `.codex/hooks/user_prompt_submit.py` | Inject `ix briefing` once per 10 minutes when Ix Pro is available |
-| `PreToolUse` (`Bash`) | `.codex/hooks/pre_tool_use.py` | Pre-edit blast-radius warning + front-run shell search/read with Ix summaries |
-| `PostToolUse` (`Bash`) | `.codex/hooks/post_tool_use.py` | After a detected file write, request the guarded repository map (below) |
+| `PreToolUse` (`Bash\|apply_patch`) | `.codex/hooks/pre_tool_use.py` | Pre-edit blast-radius warning + front-run shell search/read with Ix summaries |
+| `PostToolUse` (`Bash\|apply_patch`) | `.codex/hooks/post_tool_use.py` | After a detected file write, request the guarded repository map (below) |
 | `Stop` | `.codex/hooks/stop.py` | After each response, request the guarded repository map (below) |
+
+## Host Protocol (Codex 0.155.1)
+
+Verified against the `codex` 0.155.1 binary and `openai/codex@rust-v0.155.1` (`codex-rs/hooks/`):
+
+- **Model context.** `hookSpecificOutput.additionalContext` (with `hookEventName` set to the event) is the only output Codex adds to the model's input on `SessionStart`, `UserPromptSubmit`, `PreToolUse` and `PostToolUse`. A top-level `systemMessage` becomes a UI warning only. `Stop` has no model channel; its output is `{"continue": true}`. The output structs deny unknown fields, so a misspelt key fails the hook run. `tests/test_codex_hook_protocol.py` validates every hook against the generated schemas, vendored in `tests/fixtures/codex-0.155.1/`.
+- **Tool names.** Shell tools reach hooks as `Bash`. File edits use `apply_patch`, which Codex also matches as `Edit` and `Write`, with the raw patch as `tool_input.command`. Both pre and post tool hooks match `Bash|apply_patch`. The touched files are read from the patch's `*** Add File:` / `Update File:` / `Delete File:` / `Move to:` headers.
+- **Shell.** Codex runs each `command` through the session shell without a login profile (`<shell> -c`). The inner `/bin/sh -c` stays non-login too. A login shell would source the user's profile on every hook, and anything that profile prints corrupts the hook's JSON.
+- **Feature flag.** `hooks` has been stable and on by default since Codex 0.124 (openai/codex#19012). `codex_hooks` is a deprecated alias (`codex-rs/features/src/legacy.rs`), so the installer no longer writes it.
+- **Trust.** User (`~/.codex/hooks.json`), project (`.codex/hooks.json`) and plugin-bundled hooks are all non-managed. Codex skips them until their exact definition is trusted, records trust as a `trusted_hash` of the normalised hook (event, matcher, command, timeout, statusMessage), and asks again whenever that hash changes (`codex-rs/hooks/src/engine/discovery.rs`). The TUI prompts "Hooks need review" at startup. `codex exec` cannot prompt, so it skips untrusted hooks unless it is run with `--dangerously-bypass-hook-trust`. Changing `hooks.json`, as this release does, requires the user to review the hooks again.
+
+## Moving to Plugin-Bundled Hooks (not done)
+
+Codex 0.155 loads hooks bundled in an installed plugin: `hooks/hooks.json` under the plugin root by default, or a `hooks` entry in `.codex-plugin/plugin.json` (a path, paths, or inline objects). `plugin_hooks` is listed as a removed flag, so plugin hooks are always on. They still need trust exactly like `~/.codex/hooks.json`, and installing or enabling the plugin does not trust them. The move would not remove the review step. What it would change:
+
+1. Add `plugins/ix-memory/hooks/hooks.json` with the five events. Commands would use `$PLUGIN_ROOT` (Codex sets `PLUGIN_ROOT`/`PLUGIN_DATA`, plus the `CLAUDE_PLUGIN_*` aliases), e.g. `python3 "$PLUGIN_ROOT/hooks/session_start.py"`. That replaces the `$PWD`-walking one-liner and the project-over-home precedence.
+2. Move `.codex/hooks/*.py` into `plugins/ix-memory/hooks/`, and the caches into `$PLUGIN_DATA` if wanted.
+3. Windows: the installer's per-machine rewrite to an absolute interpreter path cannot apply to a file shipped inside the plugin. Use `commandWindows` (accepted by `HookHandlerConfig`) with a command the Windows session shell can parse. Codex hands it to PowerShell as `-NoProfile -Command <cmd>`, or to `cmd /c` (`codex-rs/core/src/shell.rs`, `derive_exec_args`).
+4. Retire `--hooks`, or keep it only for Codex versions that predate plugin hooks, and have it stop writing `~/.codex/hooks.json` so the two sources do not both fire.
+5. Hook enablement then follows the plugin's enable and disable lifecycle, and a plugin update that changes the hook definitions prompts for review again.
 
 ## MCP Availability (Verified)
 
@@ -25,8 +45,9 @@ in `agents/` remain documentation-only until confirmed.
 ## What The PreToolUse Hook Does
 
 **Write detection (pre-edit gate):**
-- Parses the Bash command string for output redirections (`>`, `>>`), `tee` invocations, and editor commands
-- When a write target is detected, runs `ix impact <file>` before the command executes
+- For `apply_patch`: every file the patch adds, updates, deletes or moves to
+- For `Bash`: output redirections (`>`, `>>`), `tee` invocations, and editor commands
+- When a write target is detected, runs `ix impact <file>` before the tool executes (the first 3 files, in parallel)
 - Injects a one-line blast-radius warning if risk is medium/high/critical with 3+ dependents
 - Never blocks the command — always advisory
 
@@ -40,8 +61,8 @@ in `agents/` remain documentation-only until confirmed.
 
 ## What The PostToolUse Hook Does
 
-- Reads the same Bash command from the PostToolUse event
-- Detects file write operations using `detect_file_write()` (same logic as PreToolUse)
+- Reads the same tool input from the PostToolUse event
+- Detects file writes with `files_written()` (same logic as PreToolUse: patch headers for `apply_patch`, `detect_file_write()` for `Bash`)
 - On a write, requests the same guarded repository map as `stop.py` — never `ix map <file>`, which the CLI rejects ("Map path is not a directory")
 
 ## The Guarded Automatic Map
@@ -59,9 +80,9 @@ Hook caches and debounce stamps live in `${XDG_STATE_HOME:-~/.local/state}/ix-co
 
 | Capability | Claude | Codex | Notes |
 |---|---|---|---|
-| Edit-specific PreToolUse matcher | `Edit`, `Write`, `MultiEdit` events | Bash command parse only | Codex only exposes generic Bash tool; write detection via regex |
+| Edit-specific PreToolUse matcher | `Edit`, `Write`, `MultiEdit` events | `apply_patch` (+ Bash redirect parse) | Codex edits files with `apply_patch`; files come from the patch headers |
 | Grep/Glob tool interception | Dedicated `Grep`/`Glob` matchers | Bash command parse only | Same limitation as write detection |
-| `file_path` in PreToolUse event | Direct from `tool_input.file_path` | Parsed from Bash command string | Less reliable for complex pipelines |
+| `file_path` in PreToolUse event | Direct from `tool_input.file_path` | Parsed from the patch, or from the Bash command string | Bash parsing is less reliable for complex pipelines |
 | First-class agent delegation | Yes | Unknown — docs-only | Pending Codex agent runtime verification |
 | MCP tools | Via hooks settings | Available (`codex mcp`) | Python MCP server not yet implemented |
 
