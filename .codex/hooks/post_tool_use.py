@@ -3,28 +3,19 @@
 
 from __future__ import annotations
 
-from common import (
-    detect_file_write,
-    find_workspace_root,
-    ix_healthy,
-    read_event,
-    spawn_background_ix_ingest,
-)
+from common import detect_file_write, ix_available, read_event, request_auto_map
 
 
 def main() -> None:
     event = read_event()
-    workspace_root = find_workspace_root(event.get("cwd"))
-    if not ix_healthy(workspace_root):
-        return
-
     command = str(event.get("tool_input", {}).get("command") or "")
-    if not command:
+    if not command or not detect_file_write(command):
         return
-
-    write_paths = detect_file_write(command)
-    for path in write_paths[:3]:
-        spawn_background_ix_ingest(path, workspace_root)
+    # Not `ix map <file>`: map takes a directory and rejects a file outright.
+    # A write asks for the same guarded, debounced repository refresh the Stop
+    # hook does, and the CLI's incremental map picks up what changed.
+    if ix_available():
+        request_auto_map(event.get("cwd"))
 
 
 if __name__ == "__main__":

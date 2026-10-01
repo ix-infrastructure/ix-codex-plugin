@@ -3,27 +3,17 @@
 
 from __future__ import annotations
 
-from common import (
-    call_runtime,
-    emit_json,
-    find_workspace_root,
-    git_revision,
-    ix_healthy,
-    read_event,
-    spawn_background_ix_map,
-)
+from common import emit_json, ix_available, read_event, request_auto_map
 
 
 def main() -> None:
     event = read_event()
-    workspace_root = find_workspace_root(event.get("cwd"))
-    if ix_healthy(workspace_root):
-        rev = git_revision(workspace_root)
-        payload: dict = {"trigger": "stop"}
-        if rev:
-            payload["revision"] = rev
-        if call_runtime("/v2/ingest/map", payload, workspace_root=workspace_root) is None:
-            spawn_background_ix_map(workspace_root)
+    # Every guard lives in request_auto_map: a git repository that is not $HOME,
+    # already mapped, and not refreshed in the last few minutes. The map itself
+    # is detached, so this hook costs at most one `git rev-parse` and one
+    # `ix status`, both bounded well inside the hook's 10 s timeout.
+    if ix_available():
+        request_auto_map(event.get("cwd"))
     emit_json({"continue": True})
 
 

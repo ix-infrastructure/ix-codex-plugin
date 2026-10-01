@@ -81,6 +81,13 @@ else
   printf '%s\n' "$ups_out" | sed 's/^/      /'
 fi
 
+if map_out=$(python3 "$REPO/tests/test_auto_map.py" 2>&1); then
+  ok "automatic map only for a mapped git repo, never \$HOME, debounced per root"
+else
+  fail "auto-map guard tests failed"
+  printf '%s\n' "$map_out" | sed 's/^/      /'
+fi
+
 if argv_out=$(python3 "$REPO/tests/test_ix_argv_resolution.py" 2>&1); then
   ok "ix invocations resolve through PATHEXT and refuse cmd metacharacters"
 else
@@ -106,17 +113,64 @@ PYEOF
 echo ""
 echo "-- Hook dry-runs --"
 
-SESSION_OUT="$(printf '{"cwd":"%s"}' "$REPO" | python3 "$REPO/.codex/hooks/session_start.py" 2>/dev/null || true)"
-[ -n "$SESSION_OUT" ] && ok "session_start emits guidance" || info "session_start produced no output"
+# Against a fake `ix`, never the real one: these used to run whatever `ix` was on
+# PATH, and with a healthy backend the post-write hook then mapped for real --
+# into a backend other workspaces share. The fake is strict where the real CLI
+# is: `map` of a file and `locate --limit` fail, as they do there. Every call is
+# logged, so what the hooks ran is checked rather than assumed.
+DRY="$(mktemp -d)"
+trap 'rm -rf "$DRY"' EXIT
+mkdir -p "$DRY/bin"
+cat > "$DRY/bin/ix" << 'FAKEEOF'
+#!/bin/sh
+echo "$*|$PWD|${IX_AUTO_MAP:-}" >> "$IX_FAKE_LOG"
+case "$1" in
+  status)
+    case " $* " in *" --format json "*) echo '{"backend":"ok","graphCompleted":true}' ;; *) echo "Backend: ok" ;; esac ;;
+  map)
+    if [ -n "${2:-}" ] && [ "${2#-}" = "$2" ] && [ ! -d "$2" ]; then
+      echo "Map path is not a directory: $2" >&2; echo "REJECTED $*" >> "$IX_FAKE_LOG"; exit 1
+    fi ;;
+  locate)
+    case " $* " in *" --limit"*) echo "error: unknown option '--limit'" >&2; echo "REJECTED $*" >> "$IX_FAKE_LOG"; exit 1 ;; esac
+    echo '{"resolvedTarget":{"name":"impact","kind":"function","path":"common.py"}}' ;;
+  text) echo '{"results":[{"path":"README.md"}]}' ;;
+  *) echo '{}' ;;
+esac
+FAKEEOF
+chmod +x "$DRY/bin/ix"
+export IX_FAKE_LOG="$DRY/ix.log"
+: > "$IX_FAKE_LOG"
+dry() { PATH="$DRY/bin:$PATH" XDG_STATE_HOME="$DRY/state" python3 "$REPO/.codex/hooks/$1.py"; }
 
-PRE_SEARCH="$(printf '{"cwd":"%s","tool_input":{"command":"rg \"impact\" README.md"}}' "$REPO" | python3 "$REPO/.codex/hooks/pre_tool_use.py" 2>/dev/null || true)"
-[ -n "$PRE_SEARCH" ] && ok "pre_tool_use: search interception executed" || info "pre_tool_use: no search output (ix may be unavailable)"
+SESSION_OUT="$(printf '{"cwd":"%s"}' "$REPO" | dry session_start 2>/dev/null || true)"
+[ -n "$SESSION_OUT" ] && ok "session_start emits guidance" || fail "session_start produced no output"
 
-PRE_WRITE="$(printf '{"cwd":"%s","tool_input":{"command":"echo hello > /tmp/ix-test-write.py"}}' "$REPO" | python3 "$REPO/.codex/hooks/pre_tool_use.py" 2>/dev/null || true)"
-info "pre_tool_use: write detection dry-run completed (output: $([ -n "$PRE_WRITE" ] && echo 'yes' || echo 'none — ix unavailable or file not in graph'))"
+PRE_SEARCH="$(printf '{"cwd":"%s","tool_input":{"command":"rg \\"impact\\" README.md"}}' "$REPO" | dry pre_tool_use 2>/dev/null || true)"
+[ -n "$PRE_SEARCH" ] && ok "pre_tool_use: search interception executed" || fail "pre_tool_use: no search output"
 
-POST_OUT="$(printf '{"cwd":"%s","tool_input":{"command":"echo hello > /tmp/ix-test-post.py"}}' "$REPO" | python3 "$REPO/.codex/hooks/post_tool_use.py" 2>/dev/null || true)"
-ok "post_tool_use: dry-run completed without error"
+PRE_WRITE="$(printf '{"cwd":"%s","tool_input":{"command":"echo hello > %s/ix-test-write.py"}}' "$REPO" "$DRY" | dry pre_tool_use 2>/dev/null || true)"
+info "pre_tool_use: write detection dry-run completed (output: $([ -n "$PRE_WRITE" ] && echo 'yes' || echo 'none'))"
+
+printf '{"cwd":"%s","tool_input":{"command":"echo hello > %s/ix-test-post.py"}}' "$REPO" "$DRY" | dry post_tool_use >/dev/null 2>&1 \
+  && ok "post_tool_use: dry-run completed without error" || fail "post_tool_use: dry-run failed"
+STOP_OUT="$(printf '{"cwd":"%s"}' "$REPO" | dry stop 2>/dev/null || true)"
+[ "$STOP_OUT" = '{"continue": true}' ] && ok "stop: continues the turn" || fail "stop: unexpected output '$STOP_OUT'"
+sleep 1  # the map is detached; let it reach the log
+
+if grep -q '^REJECTED' "$IX_FAKE_LOG"; then
+  fail "a hook ran an ix call the real CLI rejects:"; grep '^REJECTED' "$IX_FAKE_LOG" | sed 's/^/      /'
+else
+  ok "every ix call the hooks made is one the CLI accepts"
+fi
+# post_tool_use and stop share one debounce window, so exactly one map, of the
+# repository root, silent, from the root, marked automatic.
+MAPS="$(grep -c '^map ' "$IX_FAKE_LOG" || true)"
+if [ "$MAPS" = 1 ] && grep -qx "map $REPO --silent|$REPO|1" "$IX_FAKE_LOG"; then
+  ok "one guarded map: ix map <root> --silent, cwd root, IX_AUTO_MAP=1"
+else
+  fail "expected exactly one guarded root map, log was:"; sed 's/^/      /' "$IX_FAKE_LOG"
+fi
 
 echo ""
 echo "-- MCP registration checks --"
@@ -159,40 +213,6 @@ python3 "$REPO/tests/test_windows_hook_launch.py" >/dev/null 2>&1 \
   && ok "hooks launch without a shell on Windows" \
   || fail "Windows hook-launch check failed"
 
-
-echo ""
-echo "-- _scrub_secrets unit tests --"
-
-python3 -c "
-import sys
-sys.path.insert(0, '$REPO/.codex/hooks')
-from common import _scrub_secrets, SECRET_RE
-
-cases = [
-    ('sk-abc12345678901234567890',     True),
-    ('ghp_' + 'A' * 36,               True),
-    ('AKIA' + 'A' * 16,               True),
-    ('password=mysupersecret123',      True),
-    ('UserService',                    False),
-    ('handle_request',                 False),
-    ('test_pattern',                   False),
-]
-failed = 0
-for text, expect_redact in cases:
-    hit = bool(SECRET_RE.search(text))
-    status = 'ok' if hit == expect_redact else 'FAIL'
-    if status == 'FAIL':
-        failed += 1
-    print(f'  [{status}] SECRET_RE: {text[:30]!r} → redact={hit} (expected {expect_redact})')
-
-# Scrubbing test
-payload = {'query': {'targets': ['sk-abc12345678901234567890']}, 'note': 'safe'}
-scrubbed = _scrub_secrets(payload)
-assert scrubbed['query']['targets'][0] == '[REDACTED]'
-assert scrubbed['note'] == 'safe'
-print('  [ok] _scrub_secrets payload scrubbing correct')
-sys.exit(failed)
-" && ok "_scrub_secrets unit tests passed" || fail "_scrub_secrets unit tests failed"
 
 echo ""
 echo "-- detect_file_write unit tests --"

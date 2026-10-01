@@ -53,17 +53,24 @@ class UserPromptSubmitTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.cache_dir = Path(self._tmp.name)
         self.common, self.hook = _load("user_prompt_submit", self.cache_dir)
+        # A project of its own, so the hook has a workspace to resolve that is
+        # neither $HOME nor wherever the suite happens to run from.
+        self.cwd = self.cache_dir / "project"
+        self.cwd.mkdir()
+        self.root = self.common.find_workspace_root(str(self.cwd))
 
-    def _run_hook(self, *, runtime_answers: bool, briefing_stdout: str = '{"plans": []}'):
+    def _run_hook(self, *, briefing_stdout: str = '{"plans": []}'):
         """Drive main() once. Returns the argv of every `ix` call it made."""
         calls: list[list[str]] = []
+        real_run = self.common.run_command
 
-        def fake_run(argv, **_kwargs):
+        def fake_run(argv, **kwargs):
+            if argv[0] == "git":  # workspace resolution: the real answer
+                return real_run(argv, **kwargs)
             calls.append(list(argv))
             out = "ok" if argv[:2] == ["ix", "status"] else briefing_stdout
             return subprocess.CompletedProcess(argv, 0, out, "")
 
-        runtime = {"briefing": "from the runtime API"} if runtime_answers else None
         self.emitted: list[dict] = []
         # ix_available() is a real `shutil.which("ix")`, so without this the
         # whole hook returns at the first guard on any machine that has no CLI
@@ -72,8 +79,8 @@ class UserPromptSubmitTest(unittest.TestCase):
         with patch.object(self.common, "ix_available", return_value=True), patch.object(
             self.common, "run_command", side_effect=fake_run
         ), patch.object(
-            self.hook, "read_event", return_value={"cwd": "."}
-        ), patch.object(self.hook, "call_runtime", return_value=runtime), patch.object(
+            self.hook, "read_event", return_value={"cwd": str(self.cwd)}
+        ), patch.object(
             self.hook, "emit_json", side_effect=self.emitted.append
         ):
             self.hook.main()
@@ -84,17 +91,17 @@ class UserPromptSubmitTest(unittest.TestCase):
 
     def test_the_probe_is_not_run_when_no_briefing_is_due(self) -> None:
         """The expensive guard must sit behind the free one."""
-        self.common.mark_briefing_sent()  # nothing is due for BRIEFING_TTL_SECONDS
-        calls = self._run_hook(runtime_answers=True)
+        self.common.mark_briefing_sent(self.root)  # nothing due for BRIEFING_TTL_SECONDS
+        calls = self._run_hook()
         self.assertEqual(
             0,
             self._briefings(calls),
             "a full `ix briefing` ran on a prompt that had nothing to say",
         )
 
-    def test_one_briefing_per_prompt_when_the_runtime_api_is_down(self) -> None:
+    def test_one_briefing_per_prompt(self) -> None:
         """The probe's output is the briefing; running it twice is the bug."""
-        calls = self._run_hook(runtime_answers=False)
+        calls = self._run_hook()
         self.assertEqual(1, self._briefings(calls))
         self.assertTrue(self.emitted, "the briefing should still be emitted")
         self.assertIn(
@@ -103,18 +110,34 @@ class UserPromptSubmitTest(unittest.TestCase):
             "the reused output must be the same text the fallback would produce",
         )
 
-    def test_one_briefing_per_prompt_when_the_runtime_api_answers(self) -> None:
-        calls = self._run_hook(runtime_answers=True)
+    def test_the_briefing_window_is_per_project(self) -> None:
+        """Having just briefed repo A must not hold back repo B's briefing."""
+        other = self.cache_dir / "other-project"
+        other.mkdir()
+        self.common.mark_briefing_sent(self.common.find_workspace_root(str(other)))
+        calls = self._run_hook()
         self.assertEqual(1, self._briefings(calls))
-        self.assertIn(
-            "from the runtime API",
-            self.emitted[0]["hookSpecificOutput"]["additionalContext"],
-        )
+        self.assertTrue(self.emitted)
+
+    def test_a_briefing_is_not_repeated_inside_the_window(self) -> None:
+        self._run_hook()
+        calls = self._run_hook()
+        self.assertEqual(0, self._briefings(calls))
+
+    def test_no_workspace_means_no_briefing(self) -> None:
+        """A session in $HOME resolves to no project, and so to no `ix` calls."""
+        with patch.object(self.common, "_home", return_value=self.cwd.resolve()):
+            calls = self._run_hook()
+        self.assertEqual([], calls)
+        self.assertEqual([], self.emitted)
 
     def test_an_oss_install_emits_nothing_and_stops_after_the_probe(self) -> None:
         calls: list[list[str]] = []
+        real_run = self.common.run_command
 
-        def fake_run(argv, **_kwargs):
+        def fake_run(argv, **kwargs):
+            if argv[0] == "git":
+                return real_run(argv, **kwargs)
             calls.append(list(argv))
             if argv[:2] == ["ix", "status"]:
                 return subprocess.CompletedProcess(argv, 0, "ok", "")
@@ -126,8 +149,8 @@ class UserPromptSubmitTest(unittest.TestCase):
         with patch.object(self.common, "ix_available", return_value=True), patch.object(
             self.common, "run_command", side_effect=fake_run
         ), patch.object(
-            self.hook, "read_event", return_value={"cwd": "."}
-        ), patch.object(self.hook, "call_runtime", return_value=None), patch.object(
+            self.hook, "read_event", return_value={"cwd": str(self.cwd)}
+        ), patch.object(
             self.hook, "emit_json", side_effect=emitted.append
         ):
             self.hook.main()
