@@ -103,15 +103,12 @@ class IxArgvResolutionTest(unittest.TestCase):
             def __init__(self, argv, **kwargs):
                 seen.append(argv)
 
+        root = Path(tempfile.gettempdir()).resolve()
         with patch.object(self.common.shutil, "which", return_value=WINDOWS_SHIM), \
              patch.object(self.common.subprocess, "Popen", FakePopen):
-            self.common.spawn_background_ix_ingest("src/app.py", None)
-            self.common.spawn_background_ix_map(None)
+            self.assertTrue(self.common.spawn_background_ix_map(root))
 
-        self.assertEqual(
-            [[WINDOWS_SHIM, "map", "src/app.py"], [WINDOWS_SHIM, "map"]],
-            seen,
-        )
+        self.assertEqual([[WINDOWS_SHIM, "map", str(root), "--silent"]], seen)
 
     def test_non_ix_commands_are_left_alone(self) -> None:
         with patch.object(self.common.shutil, "which", return_value=WINDOWS_SHIM):
@@ -193,20 +190,21 @@ class IxArgvResolutionTest(unittest.TestCase):
                     self.common.shutil, "which", return_value=WINDOWS_SHIM
                 ), patch.object(self.common.subprocess, "run") as run:
                     self.common._ix_executable.cache_clear()
-                    result = self.common.run_command(["ix", "map", argument])
+                    result = self.common.run_command(["ix", "text", argument])
                 self.assertIsNone(result)
                 run.assert_not_called()
 
-    def test_the_background_ingest_stops_too(self) -> None:
-        """The most exposed argument: a model-written path, sent unattended."""
+    def test_the_background_map_stops_too(self) -> None:
+        """Sent unattended with both streams discarded: nothing would show it."""
+        clean = Path(tempfile.gettempdir()).resolve()
         with patch.object(
             self.common.shutil, "which", return_value=WINDOWS_SHIM
         ), patch.object(self.common.subprocess, "Popen") as popen:
             self.common._ix_executable.cache_clear()
-            self.common.spawn_background_ix_ingest("a&whoami", None)
+            self.assertFalse(self.common.spawn_background_ix_map(clean / "a&whoami"))
             popen.assert_not_called()
 
-            self.common.spawn_background_ix_ingest("src/app.py", None)
+            self.assertTrue(self.common.spawn_background_ix_map(clean))
             popen.assert_called_once()
 
     def test_a_posix_path_is_never_refused(self) -> None:
@@ -217,12 +215,12 @@ class IxArgvResolutionTest(unittest.TestCase):
         for resolved in ("/usr/local/bin/ix", "/home/a&b/.local/bin/ix"):
             with self.subTest(resolved):
                 self.assertEqual(
-                    "", self.common.unsafe_for_cmd_shim([resolved, "map", "a&b.py"])
+                    "", self.common.unsafe_for_cmd_shim([resolved, "text", "a&b.py"])
                 )
 
     def test_a_windows_shim_with_a_clean_argument_is_not_refused(self) -> None:
         self.assertEqual(
-            "", self.common.unsafe_for_cmd_shim([WINDOWS_SHIM, "map", "src/app.py"])
+            "", self.common.unsafe_for_cmd_shim([WINDOWS_SHIM, "text", "src/app.py"])
         )
 
     def test_every_hook_argv_starts_with_ix(self) -> None:

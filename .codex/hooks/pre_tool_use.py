@@ -20,7 +20,7 @@ from common import (
 def main() -> None:
     event = read_event()
     workspace_root = find_workspace_root(event.get("cwd"))
-    if not ix_healthy(workspace_root):
+    if workspace_root is None or not ix_healthy(workspace_root):
         return
 
     command = str(event.get("tool_input", {}).get("command") or "")

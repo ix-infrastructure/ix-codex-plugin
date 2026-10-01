@@ -12,17 +12,40 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
-import urllib.request
-import uuid
 from pathlib import Path
 
 
-CACHE_DIR = Path(os.environ.get("TMPDIR", "/tmp")) / "ix-codex-hooks"
+def _default_state_dir() -> Path:
+    """Per-user directory for the hooks' caches and the auto-map debounce stamps.
+
+    Not `$TMPDIR/ix-codex-hooks`: on Linux that is a fixed, world-writable
+    `/tmp` path, so a second account on the machine could pre-create it (or
+    plant a stamp in it) and every user would read one another's caches.
+    """
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA", "")
+        if base and os.path.isabs(base):
+            return Path(base) / "ix-codex-plugin"
+    else:
+        base = os.environ.get("XDG_STATE_HOME", "")
+        if base and os.path.isabs(base):  # the spec says to ignore a relative one
+            return Path(base) / "ix-codex-plugin"
+    try:
+        home = Path.home()
+    except (RuntimeError, KeyError):  # no resolvable home directory
+        owner = os.getuid() if hasattr(os, "getuid") else os.environ.get("USERNAME", "user")
+        return Path(tempfile.gettempdir()) / f"ix-codex-plugin-{owner}"
+    if os.name == "nt":
+        return home / "AppData" / "Local" / "ix-codex-plugin"
+    return home / ".local" / "state" / "ix-codex-plugin"
+
+
+CACHE_DIR = _default_state_dir()
 STATUS_CACHE_PATH = CACHE_DIR / "ix-status.json"
 BRIEFING_CACHE_PATH = CACHE_DIR / "ix-briefing.txt"
 PRO_CACHE_PATH = CACHE_DIR / "ix-pro.json"
-RUNTIME_HEALTH_CACHE_PATH = CACHE_DIR / "ix-runtime-health.json"
 
 HEALTH_TTL_SECONDS = 30
 # Whether @ix/pro is installed changes only when someone installs or removes it,
@@ -37,23 +60,16 @@ PRO_TTL_SECONDS = 3600
 # that a transient fault still clears on its own within a minute.
 PRO_PROBE_BACKOFF_SECONDS = 60
 BRIEFING_TTL_SECONDS = 600
-RUNTIME_HEALTH_TTL_SECONDS = 30
+# At most one automatic `ix map` per repository in this window, whichever hook
+# asks first. Ix holds its own per-workspace map lock, so this is about cost,
+# not correctness: a Stop hook fires on every turn.
+AUTO_MAP_DEBOUNCE_SECONDS = 120
+# The auto-map guard runs inside the Stop hook (10 s timeout in hooks.json), so
+# the two synchronous calls it makes are bounded well below that together.
+GIT_TOPLEVEL_TIMEOUT_SECONDS = 3
+AUTO_MAP_STATUS_TIMEOUT_SECONDS = 4
 
 SHELL_OPERATORS = ("|", "&&", "||", ";", "$(", "`")
-
-# Detects common secret shapes: API keys, PATs, PEM headers, credential kv pairs
-SECRET_RE = re.compile(
-    r"(?:"
-    r"(?:sk|pk|rk|ak|sk_live|sk_test)-[A-Za-z0-9]{16,}"
-    r"|ghp_[A-Za-z0-9]{36,}"
-    r"|ghs_[A-Za-z0-9]{36,}"
-    r"|github_pat_[A-Za-z0-9_]{82,}"
-    r"|xox[bpra]-[A-Za-z0-9\-]{16,}"
-    r"|AKIA[A-Z0-9]{16}"
-    r"|-----BEGIN [A-Z ]{0,20}PRIVATE KEY"
-    r"|(?:password|passwd|secret|token|apikey|api_key)\s*[:=]\s*\S{8,}"
-    r")"
-)
 
 # Output redirect: > or >> not preceded by 2 (stderr), < (heredoc), or > (already matched)
 WRITE_REDIRECT_RE = re.compile(r"(?<![2<>])>>?\s+([^\s|;&<>]+)")
@@ -140,14 +156,66 @@ def emit_json(payload: dict) -> None:
     sys.stdout.write("\n")
 
 
-def find_workspace_root(cwd: str | None) -> Path:
-    start = Path(cwd or os.getcwd()).resolve()
-    for candidate in (start, *start.parents):
-        if (candidate / ".codex" / "hooks.json").exists():
-            return candidate
-    for candidate in (start, *start.parents):
-        if (candidate / ".git").exists():
-            return candidate
+def _home() -> Path | None:
+    try:
+        return Path.home().resolve()
+    except (RuntimeError, KeyError, OSError):
+        return None
+
+
+def _canonical(path: str | Path) -> str:
+    """A spelling of `path` two equal directories always share, on every OS.
+
+    normcase folds case and separators on Windows, where `git rev-parse` prints
+    `C:/Users/...` while Python hands back `C:\\Users\\...`.
+    """
+    return os.path.normcase(str(Path(path).resolve()))
+
+
+def _is_home(path: str | Path) -> bool:
+    home = _home()
+    return home is not None and _canonical(path) == _canonical(home)
+
+
+def git_toplevel(path: str | Path | None) -> Path | None:
+    """`git -C <path> rev-parse --show-toplevel`, or None outside a work tree."""
+    if not path:
+        return None
+    result = run_command(
+        ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+        timeout=GIT_TOPLEVEL_TIMEOUT_SECONDS,
+    )
+    if not result or result.returncode != 0:
+        return None
+    top = result.stdout.strip()
+    if not top:
+        return None
+    try:
+        return Path(top).resolve()
+    except (OSError, ValueError):
+        return None
+
+
+def find_workspace_root(cwd: str | None) -> Path | None:
+    """The project the hook payload's `cwd` belongs to, or None for "no project".
+
+    The git root of `cwd` first. This used to look for `.codex/hooks.json`
+    before any `.git` -- and a `--home` install puts exactly that file in
+    `~/.codex/`, so every hook in every repository under `$HOME` resolved to
+    `$HOME` itself and ran its `ix` queries (and its `ix map`) from there.
+
+    Never `$HOME`: a home directory is not a project, even when it is a dotfiles
+    repository. Outside git, the directory itself is the best answer there is.
+    """
+    try:
+        start = Path(cwd or os.getcwd()).resolve()
+    except (OSError, ValueError):
+        return None
+    top = git_toplevel(start)
+    if top is not None and not _is_home(top):
+        return top
+    if _is_home(start):
+        return None
     return start
 
 
@@ -205,17 +273,14 @@ def _ix_executable() -> str:
 # only when it contains whitespace, so `a&whoami` splits into two commands while
 # `a & whoami` does not. `%VAR%` is expanded either way.
 #
-# These arguments are not trusted: spawn_background_ix_ingest takes the path of
-# a file the model just wrote, and build_search_message takes a pattern lifted
+# These arguments are not trusted: build_write_warning takes the path of a
+# file the model is about to write, and build_search_message takes a pattern lifted
 # out of a command the model ran. Before the resolution above, a bare "ix" could
 # not be launched on Windows at all, so this was unreachable there; afterwards it
 # is the ordinary path.
 #
 # Quoting correctly for cmd.exe is the trap CVE-2024-24576 was about, so this
-# refuses the input rather than trying to escape it. Same set and same reasoning
-# as `_unsafe_for_cmd_shim` in mcp/server.py -- deliberately duplicated, because
-# the installer copies the hooks and the MCP server to different places and
-# neither can import the other.
+# refuses the input rather than trying to escape it.
 _CMD_SHIM_SUFFIXES = (".cmd", ".bat")
 _CMD_METACHARACTERS = frozenset('&|<>^"%!\r\n')
 
@@ -258,22 +323,74 @@ def ix_available() -> bool:
     return shutil.which("ix") is not None
 
 
-def _write_cache(path: Path, payload: dict) -> None:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload))
+def _private_dir(directory: Path) -> bool:
+    """Create `directory` for this user only; False if it cannot be trusted.
+
+    0700 on POSIX, and refused when it already exists under someone else's uid
+    -- the case that matters for the temp-dir fallback, where another account
+    could have created the path first. Windows ignores the mode; the default
+    location there is already inside the user's profile.
+    """
+    try:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if hasattr(os, "getuid") and directory.stat().st_uid != os.getuid():
+            return False
+    except OSError:
+        return False
+    return True
+
+
+def _write_text(path: Path, text: str) -> bool:
+    """Best-effort write. A cache that cannot be written must never fail a hook."""
+    if not _private_dir(path.parent):
+        return False
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)  # readers never see half a file
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def _read_text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _write_cache(path: Path, payload: dict) -> bool:
+    return _write_text(path, json.dumps(payload))
+
+
+def _read_timestamp(raw: object) -> float:
+    try:
+        return float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _root_key(root: str | Path) -> str:
+    return hashlib.sha256(_canonical(root).encode("utf-8")).hexdigest()[:16]
 
 
 def ix_healthy(cwd: str | Path | None) -> bool:
     if not ix_available():
         return False
 
-    if STATUS_CACHE_PATH.exists():
+    raw = _read_text(STATUS_CACHE_PATH)
+    if raw is not None:
         try:
-            cached = json.loads(STATUS_CACHE_PATH.read_text())
+            cached = json.loads(raw)
         except json.JSONDecodeError:
             cached = None
         if isinstance(cached, dict):
-            timestamp = float(cached.get("timestamp", 0))
+            timestamp = _read_timestamp(cached.get("timestamp", 0))
             ok = bool(cached.get("ok", False))
             if time.time() - timestamp < HEALTH_TTL_SECONDS:
                 return ok
@@ -366,10 +483,11 @@ def probe_pro(cwd: str | Path | None) -> tuple[bool, str | None]:
     the same prompt. The second element is None whenever there is nothing to
     reuse: answered from cache, not a Pro install, or no verdict.
     """
-    if PRO_CACHE_PATH.exists():
+    raw = _read_text(PRO_CACHE_PATH)
+    if raw is not None:
         try:
-            cached = json.loads(PRO_CACHE_PATH.read_text())
-        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
+            cached = json.loads(raw)
+        except json.JSONDecodeError:
             cached = None
         if isinstance(cached, dict):
             try:
@@ -431,19 +549,31 @@ def ix_pro_available(cwd: str | Path | None) -> bool:
     return probe_pro(cwd)[0]
 
 
-def briefing_due(ttl_seconds: int = BRIEFING_TTL_SECONDS) -> bool:
-    if not BRIEFING_CACHE_PATH.exists():
+def _briefing_cache_path(root: str | Path | None) -> Path:
+    # Per project: the briefing is about one workspace, so having just seen
+    # repo A's must not hold back repo B's for the next ten minutes.
+    if root is None:
+        return BRIEFING_CACHE_PATH
+    return BRIEFING_CACHE_PATH.with_name(
+        f"{BRIEFING_CACHE_PATH.stem}-{_root_key(root)}{BRIEFING_CACHE_PATH.suffix}"
+    )
+
+
+def briefing_due(
+    root: str | Path | None = None, ttl_seconds: int = BRIEFING_TTL_SECONDS
+) -> bool:
+    raw = _read_text(_briefing_cache_path(root))
+    if raw is None:
         return True
     try:
-        last_sent = float(BRIEFING_CACHE_PATH.read_text().strip())
+        last_sent = float(raw.strip())
     except ValueError:
         return True
     return time.time() - last_sent >= ttl_seconds
 
 
-def mark_briefing_sent() -> None:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    BRIEFING_CACHE_PATH.write_text(str(time.time()))
+def mark_briefing_sent(root: str | Path | None = None) -> None:
+    _write_text(_briefing_cache_path(root), str(time.time()))
 
 
 def looks_plain_pattern(pattern: str) -> bool:
@@ -675,20 +805,12 @@ def build_search_message(pattern: str, cwd: str | Path | None) -> str | None:
     if len(pattern) < 3:
         return None
 
-    # Plain patterns only — intent classifier (skip regex-like or secret-shaped patterns)
-    if looks_plain_pattern(pattern):
-        response = call_runtime(
-            "/v2/ix_query",
-            {"mode": "locate", "query": {"targets": [pattern]}},
-            workspace_root=cwd,
-        )
-        if response is not None:
-            return summarize_ix_query_locate(response, pattern)
-
-    # Fall back to CLI
     calls = [("text", ["ix", "text", pattern, "--limit", "15", "--format", "json"], 10)]
+    # Symbol lookup only for plain patterns: a regex is not a symbol name.
+    # No `--limit` -- `ix locate` has no such option (it resolves one target and
+    # lists the runners-up), and commander rejects the whole call over it.
     if looks_plain_pattern(pattern):
-        calls.append(("locate", ["ix", "locate", pattern, "--limit", "5", "--format", "json"], 10))
+        calls.append(("locate", ["ix", "locate", pattern, "--format", "json"], 10))
     results = run_parallel_json(calls, cwd)
 
     text_part = summarize_text_results(results.get("text"))
@@ -824,204 +946,109 @@ def build_write_warning(file_path: str, cwd: str | Path | None) -> str | None:
     )
 
 
-def spawn_background_ix_ingest(file_path: str | Path, cwd: str | Path | None) -> None:
-    """Fire-and-forget ix map on a single file path."""
-    # The most exposed argument in the plugin: a path the model just wrote, sent
-    # unattended, with both streams to DEVNULL. If it reached a shell here there
-    # would be nothing to see afterwards.
-    argv = resolve_ix_argv(["ix", "map", str(file_path)])
-    if unsafe_for_cmd_shim(argv):
-        return
-    subprocess.Popen(
-        argv,
-        cwd=str(cwd) if cwd else None,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+# ── Guarded automatic map ────────────────────────────────────────────────────
+#
+# The hooks used to run `ix map` from wherever they happened to resolve -- with a
+# `--home` install that was `$HOME` on every turn -- and `ix map <file>` after
+# every write, which the CLI rejects outright ("Map path is not a directory").
+# An automatic map now runs only for a git repository that is already mapped,
+# never for `$HOME`, at most once per AUTO_MAP_DEBOUNCE_SECONDS per repository,
+# and always detached.
 
 
-def spawn_background_ix_map(cwd: str | Path | None) -> None:
-    subprocess.Popen(
-        resolve_ix_argv(["ix", "map"]),
-        cwd=str(cwd) if cwd else None,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-
-
-# ── Runtime HTTP client ───────────────────────────────────────────────────────
-
-RUNTIME_URL = os.environ.get("IX_RUNTIME_URL", "http://localhost:8090")
-_SURFACE = "codex-plugin"
-_SURFACE_VERSION = "2.0.0"
-
-
-def git_revision(cwd: str | Path | None = None) -> str | None:
-    result = run_command(["git", "rev-parse", "HEAD"], cwd=cwd, timeout=5)
-    if result and result.returncode == 0:
-        rev = result.stdout.strip()
-        return rev if rev else None
-    return None
-
-
-def _workspace_id(root: Path) -> str:
-    return hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:16]
-
-
-def _scrub_secrets(payload: dict) -> dict:
-    """Return a copy of payload with secret-shaped string values replaced with [REDACTED]."""
-    result: dict = {}
-    for key, value in payload.items():
-        if isinstance(value, str) and SECRET_RE.search(value):
-            result[key] = "[REDACTED]"
-        elif isinstance(value, dict):
-            result[key] = _scrub_secrets(value)
-        elif isinstance(value, list):
-            scrubbed: list = []
-            for item in value:
-                if isinstance(item, dict):
-                    scrubbed.append(_scrub_secrets(item))
-                elif isinstance(item, str) and SECRET_RE.search(item):
-                    scrubbed.append("[REDACTED]")
-                else:
-                    scrubbed.append(item)
-            result[key] = scrubbed
-        else:
-            result[key] = value
-    return result
-
-
-def runtime_healthy() -> bool:
-    """Return True if the Ix Core Runtime responded to GET /v2/status within 2 s."""
-    if RUNTIME_HEALTH_CACHE_PATH.exists():
-        try:
-            cached = json.loads(RUNTIME_HEALTH_CACHE_PATH.read_text())
-        except json.JSONDecodeError:
-            cached = None
-        if isinstance(cached, dict):
-            if time.time() - float(cached.get("timestamp", 0)) < RUNTIME_HEALTH_TTL_SECONDS:
-                return bool(cached.get("ok", False))
-
-    ok = get_runtime("/v2/status", timeout=2) is not None
-    _write_cache(RUNTIME_HEALTH_CACHE_PATH, {"timestamp": time.time(), "ok": ok})
-    return ok
-
-
-def call_runtime(
-    endpoint: str,
-    payload: dict,
-    timeout: int = 9,
-    workspace_root: str | Path | None = None,
-) -> dict | list | None:
-    """POST to the Ix Core Runtime. Returns parsed JSON or None on any failure."""
-    if not runtime_healthy():
+def auto_map_root(project_dir: str | Path | None) -> Path | None:
+    """The git root of the host's project directory, unless that is `$HOME`."""
+    if not project_dir:
         return None
-    try:
-        root = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
-        body = {
-            "api_version": "v2",
-            "workspace_id": _workspace_id(root),
-            "caller": {"surface": _SURFACE, "surface_version": _SURFACE_VERSION},
-            "request_id": str(uuid.uuid4()),
-            **_scrub_secrets(payload),
-        }
-        data = json.dumps(body).encode()
-        url = RUNTIME_URL.rstrip("/") + endpoint
-        req = urllib.request.Request(
-            url,
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
+    top = git_toplevel(project_dir)
+    if top is None or _is_home(top):
+        return None
+    return top
+
+
+def _auto_map_stamp_path(root: str | Path) -> Path:
+    return CACHE_DIR / f"auto-map-{_root_key(root)}.stamp"
+
+
+def _claim_auto_map(root: Path) -> bool:
+    """Take this repository's debounce slot; False if it is already taken.
+
+    Claimed before the status check, not after the map starts, so a repository
+    that is not mapped costs one `ix status` per window rather than one per
+    turn. A slot that cannot be recorded is not taken: without the stamp every
+    turn would map.
+    """
+    stamp = _auto_map_stamp_path(root)
+    raw = _read_text(stamp)
+    if raw is not None:
+        age = time.time() - _read_timestamp(raw.strip())
+        if 0 <= age < AUTO_MAP_DEBOUNCE_SECONDS:
+            return False
+    return _write_text(stamp, str(time.time()))
+
+
+def project_is_mapped(root: Path) -> bool:
+    """`ix status --root <root>` says this workspace already has a graph.
+
+    Anything short of an explicit `graphCompleted: true` -- a failure, a
+    timeout, output that is not JSON -- is "no": an automatic map must never be
+    what creates a workspace.
+    """
+    result = run_command(
+        ["ix", "status", "--format", "json", "--root", str(root)],
+        cwd=root,
+        timeout=AUTO_MAP_STATUS_TIMEOUT_SECONDS,
+    )
+    if not result or result.returncode != 0:
+        return False
+    payload = parse_json_output(result.stdout or "")
+    return isinstance(payload, dict) and payload.get("graphCompleted") is True
+
+
+def _detached_popen_kwargs() -> dict:
+    if os.name == "nt":
+        flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
+            subprocess, "CREATE_NO_WINDOW", 0
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            if resp.status < 200 or resp.status >= 300:
-                return None
-            return json.loads(resp.read().decode())
-    except Exception:
-        return None
+        return {"creationflags": flags}
+    return {"start_new_session": True}
 
 
-def get_runtime(endpoint: str, timeout: int = 2) -> dict | list | None:
-    """GET from the Ix Core Runtime. Returns parsed JSON or None on any failure."""
+def spawn_background_ix_map(root: Path) -> bool:
+    """Start `ix map <root> --silent` detached, from `root`, marked as automatic.
+
+    IX_AUTO_MAP=1 tells the CLI this map was not asked for by a person, which is
+    what lets it decline to push a whole repository at a remote backend.
+    """
+    argv = resolve_ix_argv(["ix", "map", str(root), "--silent"])
+    if unsafe_for_cmd_shim(argv):
+        return False
     try:
-        url = RUNTIME_URL.rstrip("/") + endpoint
-        req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            if resp.status < 200 or resp.status >= 300:
-                return None
-            return json.loads(resp.read().decode())
-    except Exception:
-        return None
+        subprocess.Popen(
+            argv,
+            cwd=str(root),
+            env={**os.environ, "IX_AUTO_MAP": "1"},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **_detached_popen_kwargs(),
+        )
+    except (OSError, ValueError):
+        return False
+    return True
 
 
-def summarize_ix_query_locate(response: dict | list | None, pattern: str) -> str | None:
-    """Format a /v2/ix_query locate-mode response as search interception context."""
-    if not isinstance(response, dict):
-        return None
+def request_auto_map(project_dir: str | Path | None) -> bool:
+    """Refresh the graph for `project_dir`'s repository if every guard allows it.
 
-    entities = response.get("entities", [])
-    text_hits = response.get("text_hits", [])
-
-    entity_labels: list[str] = []
-    for e in (entities or [])[:3]:
-        if not isinstance(e, dict) or not e.get("name"):
-            continue
-        label = str(e["name"])
-        kind = str(e.get("kind") or "")
-        if kind:
-            label += f" ({kind})"
-        entity_labels.append(label)
-
-    text_count = len(text_hits) if isinstance(text_hits, list) else 0
-    text_files: list[str] = []
-    for hit in (text_hits or [])[:4]:
-        if isinstance(hit, dict) and hit.get("path"):
-            name = Path(str(hit["path"])).name
-            if name and name not in text_files:
-                text_files.append(name)
-
-    if not entity_labels and not text_count:
-        return None
-
-    pieces = [f"[ix] bash grep intercepted for '{pattern}'"]
-    if entity_labels:
-        pieces.append("candidates: " + ", ".join(entity_labels))
-    if text_count:
-        text_summary = f"{text_count} text hits"
-        if text_files:
-            extra = max(0, text_count - 4)
-            text_summary += " in " + ", ".join(text_files)
-            if extra:
-                text_summary += f" (+{extra} more)"
-        pieces.append(text_summary)
-    pieces.append(f"Prefer: ix text '{pattern}' or ix locate '{pattern}' over shell grep")
-    return " | ".join(pieces[:1] + pieces[1:])
-
-
-def format_status_briefing(response: dict | list | None) -> str | None:
-    """Format a /v2/ix_query status-mode response as briefing text."""
-    if not isinstance(response, dict):
-        return None
-
-    briefing = response.get("briefing") or response.get("content") or response.get("text")
-    if isinstance(briefing, str) and briefing.strip():
-        return briefing.strip()
-
-    parts: list[str] = []
-    status = response.get("status") or response.get("health")
-    if status:
-        parts.append(f"Status: {status}")
-    goals = response.get("goals", [])
-    if isinstance(goals, list) and goals:
-        names = [str(g.get("name") or g) for g in goals[:3] if g]
-        if names:
-            parts.append("Goals: " + ", ".join(names))
-    decisions = response.get("decisions", [])
-    if isinstance(decisions, list) and decisions:
-        names = [str(d.get("name") or d) for d in decisions[:3] if d]
-        if names:
-            parts.append("Recent decisions: " + ", ".join(names))
-
-    return "\n".join(parts) if parts else None
+    `project_dir` must come from the host's payload (its `cwd`), never from where
+    this file lives. Returns whether a map was started.
+    """
+    root = auto_map_root(project_dir)
+    if root is None:
+        return False
+    if not _claim_auto_map(root):
+        return False
+    if not project_is_mapped(root):
+        return False
+    return spawn_background_ix_map(root)

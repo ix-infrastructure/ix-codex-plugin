@@ -68,19 +68,19 @@ jobs:
 
   # ── Python tests ─────────────────────────────────────────────────────────
   # tests/ existed and ran nowhere: the gate was shellcheck plus a JSON parse,
-  # so "CI is green" said nothing about the hooks, the installer or the MCP
-  # server. The suites that caught the last round of bugs were enforced only by
-  # whoever remembered to run test-local.sh.
+  # so "CI is green" said nothing about the hooks or the installer. The suites
+  # that caught the last round of bugs were enforced only by whoever remembered
+  # to run test-local.sh.
   #
   # No pip install step on purpose. Every file under tests/ fakes what it needs
-  # -- the MCP SDK is stubbed for both major versions, and `ix` is a script
-  # written onto PATH -- so this needs nothing but an interpreter, and a
-  # dependency that cannot be installed can never be the reason the gate is red.
+  # -- `ix` is a strict in-process fake (plus a script on PATH on POSIX) -- so
+  # this needs nothing but an interpreter and git, and a dependency that cannot
+  # be installed can never be the reason the gate is red.
   #
-  # Windows is a real leg rather than a nicety: the MCP server resolves its
-  # executable differently there, `.cmd` shims route arguments through cmd.exe,
-  # and the tests that cover both skip on Linux. A Linux-only gate would report
-  # green on exactly the platform those guards exist for.
+  # Windows is a real leg rather than a nicety: `ix` resolves differently there,
+  # `.cmd` shims route arguments through cmd.exe, and the tests that cover both
+  # skip on Linux. A Linux-only gate would report green on exactly the platform
+  # those guards exist for.
   tests:
     name: Tests (${{ matrix.os }})
     strategy:

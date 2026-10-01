@@ -4,11 +4,8 @@
 from __future__ import annotations
 
 from common import (
-    call_runtime,
     emit_json,
     find_workspace_root,
-    format_status_briefing,
-    get_runtime,
     ix_healthy,
     load_plugin_version,
     read_event,
@@ -52,21 +49,10 @@ def _format_version_line(meta: dict | None) -> str | None:
 def main() -> None:
     event = read_event()
     workspace_root = find_workspace_root(event.get("cwd"))
-    if not ix_healthy(workspace_root):
+    if workspace_root is None or not ix_healthy(workspace_root):
         return
 
-    context = None
-
-    # Try runtime API: health probe then dynamic briefing
-    health = get_runtime("/v2/status")
-    if health is not None:
-        response = call_runtime(
-            "/v2/ix_query", {"mode": "status"}, workspace_root=workspace_root
-        )
-        context = format_status_briefing(response)
-
-    if context is None:
-        context = _STATIC_GUIDANCE
+    context = _STATIC_GUIDANCE
 
     version_line = _format_version_line(load_plugin_version())
     if version_line:
