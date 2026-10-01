@@ -8,6 +8,7 @@ from common import (
     find_workspace_root,
     ix_healthy,
     load_plugin_version,
+    model_context,
     read_event,
 )
 
@@ -58,14 +59,7 @@ def main() -> None:
     if version_line:
         context = version_line + "\n\n" + context
 
-    emit_json(
-        {
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": context,
-            }
-        }
-    )
+    emit_json(model_context("SessionStart", context))
 
 
 if __name__ == "__main__":

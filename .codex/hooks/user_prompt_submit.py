@@ -9,6 +9,7 @@ from common import (
     find_workspace_root,
     ix_healthy,
     mark_briefing_sent,
+    model_context,
     probe_pro,
     read_event,
     run_ix_text,
@@ -44,14 +45,7 @@ def main() -> None:
         return
 
     mark_briefing_sent(workspace_root)
-    emit_json(
-        {
-            "hookSpecificOutput": {
-                "hookEventName": "UserPromptSubmit",
-                "additionalContext": "[ix] Session briefing:\n" + briefing,
-            }
-        }
-    )
+    emit_json(model_context("UserPromptSubmit", "[ix] Session briefing:\n" + briefing))
 
 
 if __name__ == "__main__":

@@ -3,13 +3,13 @@
 
 from __future__ import annotations
 
-from common import detect_file_write, ix_available, read_event, request_auto_map
+from common import files_written, ix_available, read_event, request_auto_map
 
 
 def main() -> None:
     event = read_event()
-    command = str(event.get("tool_input", {}).get("command") or "")
-    if not command or not detect_file_write(command):
+    # A shell redirect or an `apply_patch` -- the tool Codex edits files with.
+    if not files_written(event):
         return
     # Not `ix map <file>`: map takes a directory and rejects a file outright.
     # A write asks for the same guarded, debounced repository refresh the Stop

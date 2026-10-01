@@ -4,15 +4,17 @@
 from __future__ import annotations
 
 from common import (
+    APPLY_PATCH_TOOL,
     build_read_message,
     build_search_message,
-    build_write_warning,
-    detect_file_write,
+    build_write_warnings,
     emit_json,
     extract_read_path,
     extract_search_pattern,
+    files_written,
     find_workspace_root,
     ix_healthy,
+    model_context,
     read_event,
 )
 
@@ -23,16 +25,19 @@ def main() -> None:
     if workspace_root is None or not ix_healthy(workspace_root):
         return
 
-    command = str(event.get("tool_input", {}).get("command") or "")
+    tool_input = event.get("tool_input")
+    command = str(tool_input.get("command") or "") if isinstance(tool_input, dict) else ""
     if not command:
         return
 
     message = None
 
-    write_paths = detect_file_write(command)
+    write_paths = files_written(event)
     if write_paths:
-        message = build_write_warning(write_paths[0], workspace_root)
-    else:
+        message = build_write_warnings(write_paths, workspace_root)
+    elif event.get("tool_name") != APPLY_PATCH_TOOL:
+        # Search and read interception are about shell commands; a patch that
+        # names no file has nothing for them to look at.
         pattern = extract_search_pattern(command)
         if pattern:
             message = build_search_message(pattern, workspace_root)
@@ -44,7 +49,9 @@ def main() -> None:
     if not message:
         return
 
-    emit_json({"systemMessage": message})
+    # additionalContext, not systemMessage: Codex shows a systemMessage to the
+    # user as a warning and never gives it to the model, which is who this is for.
+    emit_json(model_context("PreToolUse", message))
 
 
 if __name__ == "__main__":
