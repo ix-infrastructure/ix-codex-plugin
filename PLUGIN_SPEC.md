@@ -129,7 +129,7 @@ ix-codex-plugin/
 
 1. **Fill the ambient behavior gaps**: Add pre-edit impact warning and post-edit ingest. These require either a Codex-native hook for edit events or a pre-tool-use parser that detects file write operations.
 2. **Upgrade agents**: Investigate whether Codex supports first-class agent delegation. If so, wire the five agent playbooks as runtime agents. If not, document and keep as context-only.
-3. **Migrate `ix` CLI calls to runtime API**: Replace all Python subprocess `ix` calls with HTTP calls to `POST /v2/ix_query` and related endpoints.
+3. **Migrate `ix` CLI calls to runtime API**: Replace all Python subprocess `ix` calls with HTTP calls to `POST /v2/ix_query` and related endpoints. *(Abandoned: no Ix release ever served `/v2/*`. The client was removed in 2.4.2; the hooks use the `ix` CLI only.)*
 4. **Verify and document Codex MCP support**: Codex CLI recently added MCP. If stable, expose Ix tools as MCP tools (same model as Cursor). This would be the most impactful capability upgrade.
 5. **Add `ix-help` skill router** matching the Claude and Cursor implementations.
 

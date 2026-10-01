@@ -91,7 +91,7 @@ These are documentation artifacts today. Codex local plugins do not currently in
 | User sends a prompt | `UserPromptSubmit` | Injects `ix briefing` once per 10 min if Ix Pro is available |
 | Codex runs `Bash` with `grep`/`rg` | `PreToolUse` | Front-runs with `ix text` plus `ix locate` and injects a concise summary |
 | Codex runs `Bash` with read-style commands (`cat`, `sed`, `head`, `tail`, `awk`) | `PreToolUse` | Front-runs with `ix inventory`, `ix overview`, and `ix impact` for the target file |
-| Codex finishes responding | `Stop` | Runs `ix map` asynchronously to refresh the graph |
+| Codex finishes responding | `Stop` | Refreshes the graph in the background (`ix map <root> --silent`) — only for an already-mapped git repository, never `$HOME`, at most once per 2 minutes per repository |
 
 Unsupported Claude-only hook points today:
 - `Grep`

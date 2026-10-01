@@ -9,8 +9,8 @@ This repo ports the `ix-claude-plugin` hook model into Codex's hook runtime.
 | `SessionStart` | `.codex/hooks/session_start.py` | Inject the Ix operating model and graph-first rules |
 | `UserPromptSubmit` | `.codex/hooks/user_prompt_submit.py` | Inject `ix briefing` once per 10 minutes when Ix Pro is available |
 | `PreToolUse` (`Bash`) | `.codex/hooks/pre_tool_use.py` | Pre-edit blast-radius warning + front-run shell search/read with Ix summaries |
-| `PostToolUse` (`Bash`) | `.codex/hooks/post_tool_use.py` | Trigger per-file `ix map` after detected file writes |
-| `Stop` | `.codex/hooks/stop.py` | Run full `ix map` asynchronously after each response |
+| `PostToolUse` (`Bash`) | `.codex/hooks/post_tool_use.py` | After a detected file write, request the guarded repository map (below) |
+| `Stop` | `.codex/hooks/stop.py` | After each response, request the guarded repository map (below) |
 
 ## MCP Availability (Verified)
 
@@ -42,8 +42,18 @@ in `agents/` remain documentation-only until confirmed.
 
 - Reads the same Bash command from the PostToolUse event
 - Detects file write operations using `detect_file_write()` (same logic as PreToolUse)
-- For each written file (up to 3): fires `ix map <path>` asynchronously to keep the graph current mid-session
-- Complements `stop.py` — per-file ingest runs immediately after the write, full-map refresh runs at stop
+- On a write, requests the same guarded repository map as `stop.py` — never `ix map <file>`, which the CLI rejects ("Map path is not a directory")
+
+## The Guarded Automatic Map
+
+`PostToolUse` and `Stop` refresh the graph only when every guard holds:
+- the hook payload's `cwd` is inside a git repository (`git rev-parse --show-toplevel`), and that root is not `$HOME`
+- the repository is already mapped: `ix status --format json --root <root>` reports `graphCompleted: true` (a hook never creates a workspace)
+- no automatic map for that root in the last 2 minutes (debounce stamps live in the per-user state directory, keyed by root)
+
+The map is then `ix map <root> --silent`, run from the root with `IX_AUTO_MAP=1`, detached so the hook returns immediately.
+
+Hook caches and debounce stamps live in `${XDG_STATE_HOME:-~/.local/state}/ix-codex-plugin/` (`%LOCALAPPDATA%\ix-codex-plugin\` on Windows), not a shared `/tmp` path.
 
 ## Known Limitations vs Claude
 
@@ -58,10 +68,10 @@ in `agents/` remain documentation-only until confirmed.
 ## Safety Model
 
 All hook scripts are intentionally no-op friendly:
-- If `ix` is missing or unhealthy, every hook exits silently
+- If `ix` is missing or unhealthy, or the session is not in a project (e.g. `$HOME`), every hook exits silently
 - If write detection produces no useful data, no output is emitted
 - Hooks add context; they never block the underlying Codex tool call
-- Background ingest jobs (`spawn_background_ix_ingest`) are fire-and-forget — failures are silent
+- The automatic map is fire-and-forget — failures are silent
 
 ## write Detection Coverage
 

@@ -141,7 +141,7 @@ The Codex hook bundle mirrors the Claude plugin where Codex exposes an equivalen
 - `SessionStart` injects Ix operating guidance
 - `UserPromptSubmit` injects the Ix Pro briefing once per 10 minutes
 - `PreToolUse` for `Bash` front-runs `grep`/`rg` and read-style shell commands with Ix context
-- `Stop` runs `ix map` asynchronously
+- `Stop` (and `PostToolUse` after a detected write) refreshes an already-mapped git repository in the background — `ix map <root> --silent`, never `$HOME`, debounced per repository
 
 Current Codex limitations:
 - no direct hook matcher for `Grep` or `Glob`
@@ -191,7 +191,7 @@ agents/
 
 Pass `--format llm` for output you read directly — compact `key=value` records,
 typically 2-4x smaller than json. Use `--format json` only when a tool/script
-machine-parses the result. Pro commands (`briefing`, `bugs`, `decisions`,
+machine-parses the result. Pro commands (`briefing`, `bug list`, `decisions`,
 `plans`, `goals`, …) still use `--format json`.
 
 | Task | Command |
