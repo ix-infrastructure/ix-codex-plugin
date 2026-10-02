@@ -140,14 +140,13 @@ Included playbooks:
 The Codex hook bundle mirrors the Claude plugin where Codex exposes an equivalent event:
 - `SessionStart` injects Ix operating guidance
 - `UserPromptSubmit` injects the Ix Pro briefing once per 10 minutes
-- `PreToolUse` for `Bash` front-runs `grep`/`rg` and read-style shell commands with Ix context
+- `PreToolUse` for `Bash` front-runs `grep`/`rg` and read-style shell commands with Ix context, and for `Bash` writes and `apply_patch` edits warns about high-impact files
 - `Stop` (and `PostToolUse` after a detected write) refreshes an already-mapped git repository in the background — `ix map <root> --silent`, never `$HOME`, debounced per repository
 
 Current Codex limitations:
 - no direct hook matcher for `Grep` or `Glob`
 - no direct hook matcher for `Read`
-- no direct hook matcher for `Edit`/`Write` pre-checks
-- no direct `PostToolUse` mapping in this repo's current Codex hook setup
+- edits arrive as `apply_patch` (Codex also matches it as `Edit`/`Write`), with the patch text as `tool_input.command`
 
 Because of that, the Codex port matches the Claude behavior as closely as the Codex runtime allows, but not event-for-event.
 
@@ -168,13 +167,13 @@ plugins/ix-memory/
     ix-docs/SKILL.md            - narrative-first docs
 
 .codex/
-  config.toml                   - enables Codex hooks
   hooks.json                    - hook event mapping
   hooks/
     common.py                   - shared helpers
     session_start.py            - startup guidance
     user_prompt_submit.py       - Ix Pro briefing injection
-    pre_tool_use.py             - Bash search/read interception
+    pre_tool_use.py             - Bash search/read interception, pre-edit impact warning
+    post_tool_use.py            - post-edit background refresh
     stop.py                     - background graph refresh
 
 agents/

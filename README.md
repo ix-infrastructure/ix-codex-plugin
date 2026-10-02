@@ -16,7 +16,7 @@ This repo now mirrors the `ix-claude-plugin` content model as closely as Codex c
 - hook behavior that front-runs shell search/read actions with Ix context
 
 Codex runtime limitation:
-- Codex does not currently expose Claude-style hook matchers for `Grep`, `Glob`, `Read`, edit preflight hooks, or the Claude plugin manifest format.
+- Codex does not currently expose Claude-style hook matchers for `Grep`, `Glob`, or `Read`, or the Claude plugin manifest format. File edits are hooked through Codex's `apply_patch` tool.
 - Because of that, the Codex port matches the Claude plugin semantically, but not event-for-event.
 
 ## Requirements
@@ -91,13 +91,22 @@ These are documentation artifacts today. Codex local plugins do not currently in
 | User sends a prompt | `UserPromptSubmit` | Injects `ix briefing` once per 10 min if Ix Pro is available |
 | Codex runs `Bash` with `grep`/`rg` | `PreToolUse` | Front-runs with `ix text` plus `ix locate` and injects a concise summary |
 | Codex runs `Bash` with read-style commands (`cat`, `sed`, `head`, `tail`, `awk`) | `PreToolUse` | Front-runs with `ix inventory`, `ix overview`, and `ix impact` for the target file |
+| Codex edits files (`apply_patch`, or a shell redirect) | `PreToolUse` | Warns with `ix impact` when a touched file has a medium/high/critical blast radius |
+| Codex has edited files | `PostToolUse` | Requests the same guarded background refresh as `Stop` |
 | Codex finishes responding | `Stop` | Refreshes the graph in the background (`ix map <root> --silent`) — only for an already-mapped git repository, never `$HOME`, at most once per 2 minutes per repository |
 
 Unsupported Claude-only hook points today:
 - `Grep`
 - `Glob`
 - `Read`
-- edit preflight hooks
+
+All hook text meant for the model is returned as `hookSpecificOutput.additionalContext`, the only channel Codex adds to the model's input.
+
+### Hook trust
+
+Codex (0.155) runs a hook from `hooks.json` only after you have reviewed and trusted its exact definition. After installing or updating the hooks, start Codex interactively and accept the "Hooks need review" prompt; until then the Ix hooks are skipped. `codex exec` cannot ask, so it skips untrusted hooks.
+
+Hooks are a stable, default-on Codex feature (`[features] hooks`) since Codex 0.124, so the installer no longer writes the old `codex_hooks = true` flag. That key is now a deprecated alias; you can delete it from your `config.toml`. On Codex older than 0.124, set `codex_hooks = true` under `[features]` yourself.
 - write post-hooks in the current Codex hook bundle
 
 ## Install
@@ -151,12 +160,12 @@ Plugin:
 The plugin install step registers a marketplace entry. It does not auto-enable `ix-memory`; restart Codex and enable the plugin before expecting its skills to show up.
 
 Hooks:
-- `.codex/config.toml`
 - `.codex/hooks.json`
 - `.codex/hooks/common.py`
 - `.codex/hooks/session_start.py`
 - `.codex/hooks/user_prompt_submit.py`
 - `.codex/hooks/pre_tool_use.py`
+- `.codex/hooks/post_tool_use.py`
 - `.codex/hooks/stop.py`
 
 MCP:
@@ -171,7 +180,6 @@ MCP:
 This writes:
 - `~/.codex/plugins/ix-memory`
 - `~/.agents/plugins/marketplace.json`
-- `~/.codex/config.toml`
 - `~/.codex/hooks.json`
 - `~/.codex/hooks/*.py`
 
@@ -184,7 +192,6 @@ This writes:
 This writes:
 - `/path/to/project/plugins/ix-memory`
 - `/path/to/project/.agents/plugins/marketplace.json`
-- `/path/to/project/.codex/config.toml`
 - `/path/to/project/.codex/hooks.json`
 - `/path/to/project/.codex/hooks/*.py`
 
@@ -225,12 +232,12 @@ Codex also supports manual local plugin installation through a marketplace file.
 ### Hooks without the installer
 
 Copy these into either the repo or `~/.codex`:
-- `.codex/config.toml`
 - `.codex/hooks.json`
 - `.codex/hooks/common.py`
 - `.codex/hooks/session_start.py`
 - `.codex/hooks/user_prompt_submit.py`
 - `.codex/hooks/pre_tool_use.py`
+- `.codex/hooks/post_tool_use.py`
 - `.codex/hooks/stop.py`
 
 ## Verify active plugin version

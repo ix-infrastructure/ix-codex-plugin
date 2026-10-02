@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh -lc 'd=\"$PWD\"; while [ \"$d\" != \"/\" ]; do if [ -f \"$d/.codex/hooks/session_start.py\" ]; then exec python3 \"$d/.codex/hooks/session_start.py\"; fi; d=$(dirname \"$d\"); done; if [ -f \"$HOME/.codex/hooks/session_start.py\" ]; then exec python3 \"$HOME/.codex/hooks/session_start.py\"; fi; exit 0'",
+            "command": "/bin/sh -c 'd=\"$PWD\"; while [ \"$d\" != \"/\" ]; do if [ -f \"$d/.codex/hooks/session_start.py\" ]; then exec python3 \"$d/.codex/hooks/session_start.py\"; fi; d=$(dirname \"$d\"); done; if [ -f \"$HOME/.codex/hooks/session_start.py\" ]; then exec python3 \"$HOME/.codex/hooks/session_start.py\"; fi; exit 0'",
             "statusMessage": "Loading Ix guidance"
           }
         ]
@@ -17,30 +17,30 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh -lc 'd=\"$PWD\"; while [ \"$d\" != \"/\" ]; do if [ -f \"$d/.codex/hooks/user_prompt_submit.py\" ]; then exec python3 \"$d/.codex/hooks/user_prompt_submit.py\"; fi; d=$(dirname \"$d\"); done; if [ -f \"$HOME/.codex/hooks/user_prompt_submit.py\" ]; then exec python3 \"$HOME/.codex/hooks/user_prompt_submit.py\"; fi; exit 0'"
+            "command": "/bin/sh -c 'd=\"$PWD\"; while [ \"$d\" != \"/\" ]; do if [ -f \"$d/.codex/hooks/user_prompt_submit.py\" ]; then exec python3 \"$d/.codex/hooks/user_prompt_submit.py\"; fi; d=$(dirname \"$d\"); done; if [ -f \"$HOME/.codex/hooks/user_prompt_submit.py\" ]; then exec python3 \"$HOME/.codex/hooks/user_prompt_submit.py\"; fi; exit 0'"
           }
         ]
       }
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|apply_patch",
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh -lc 'd=\"$PWD\"; while [ \"$d\" != \"/\" ]; do if [ -f \"$d/.codex/hooks/pre_tool_use.py\" ]; then exec python3 \"$d/.codex/hooks/pre_tool_use.py\"; fi; d=$(dirname \"$d\"); done; if [ -f \"$HOME/.codex/hooks/pre_tool_use.py\" ]; then exec python3 \"$HOME/.codex/hooks/pre_tool_use.py\"; fi; exit 0'",
-            "statusMessage": "Checking Bash command with Ix"
+            "command": "/bin/sh -c 'd=\"$PWD\"; while [ \"$d\" != \"/\" ]; do if [ -f \"$d/.codex/hooks/pre_tool_use.py\" ]; then exec python3 \"$d/.codex/hooks/pre_tool_use.py\"; fi; d=$(dirname \"$d\"); done; if [ -f \"$HOME/.codex/hooks/pre_tool_use.py\" ]; then exec python3 \"$HOME/.codex/hooks/pre_tool_use.py\"; fi; exit 0'",
+            "statusMessage": "Checking with Ix"
           }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|apply_patch",
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh -lc 'd=\"$PWD\"; while [ \"$d\" != \"/\" ]; do if [ -f \"$d/.codex/hooks/post_tool_use.py\" ]; then exec python3 \"$d/.codex/hooks/post_tool_use.py\"; fi; d=$(dirname \"$d\"); done; if [ -f \"$HOME/.codex/hooks/post_tool_use.py\" ]; then exec python3 \"$HOME/.codex/hooks/post_tool_use.py\"; fi; exit 0'",
+            "command": "/bin/sh -c 'd=\"$PWD\"; while [ \"$d\" != \"/\" ]; do if [ -f \"$d/.codex/hooks/post_tool_use.py\" ]; then exec python3 \"$d/.codex/hooks/post_tool_use.py\"; fi; d=$(dirname \"$d\"); done; if [ -f \"$HOME/.codex/hooks/post_tool_use.py\" ]; then exec python3 \"$HOME/.codex/hooks/post_tool_use.py\"; fi; exit 0'",
             "statusMessage": "Updating Ix graph"
           }
         ]
@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh -lc 'd=\"$PWD\"; while [ \"$d\" != \"/\" ]; do if [ -f \"$d/.codex/hooks/stop.py\" ]; then exec python3 \"$d/.codex/hooks/stop.py\"; fi; d=$(dirname \"$d\"); done; if [ -f \"$HOME/.codex/hooks/stop.py\" ]; then exec python3 \"$HOME/.codex/hooks/stop.py\"; fi; exit 0'",
+            "command": "/bin/sh -c 'd=\"$PWD\"; while [ \"$d\" != \"/\" ]; do if [ -f \"$d/.codex/hooks/stop.py\" ]; then exec python3 \"$d/.codex/hooks/stop.py\"; fi; d=$(dirname \"$d\"); done; if [ -f \"$HOME/.codex/hooks/stop.py\" ]; then exec python3 \"$HOME/.codex/hooks/stop.py\"; fi; exit 0'",
             "timeout": 10,
             "statusMessage": "Refreshing Ix graph"
           }

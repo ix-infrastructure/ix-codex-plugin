@@ -149,6 +149,9 @@ SESSION_OUT="$(printf '{"cwd":"%s"}' "$REPO" | dry session_start 2>/dev/null || 
 PRE_SEARCH="$(printf '{"cwd":"%s","tool_input":{"command":"rg \\"impact\\" README.md"}}' "$REPO" | dry pre_tool_use 2>/dev/null || true)"
 [ -n "$PRE_SEARCH" ] && ok "pre_tool_use: search interception executed" || fail "pre_tool_use: no search output"
 
+PRE_PATCH="$(printf '{"cwd":"%s","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\\n*** Update File: README.md\\n@@\\n-a\\n+b\\n*** End Patch"}}' "$REPO" | dry pre_tool_use 2>/dev/null || true)"
+info "pre_tool_use: apply_patch dry-run completed (output: $([ -n "$PRE_PATCH" ] && echo 'yes' || echo 'none'))"
+
 PRE_WRITE="$(printf '{"cwd":"%s","tool_input":{"command":"echo hello > %s/ix-test-write.py"}}' "$REPO" "$DRY" | dry pre_tool_use 2>/dev/null || true)"
 info "pre_tool_use: write detection dry-run completed (output: $([ -n "$PRE_WRITE" ] && echo 'yes' || echo 'none'))"
 
@@ -195,15 +198,14 @@ print(f'  [ok] requires ix >= {\".\".join(str(p) for p in mod.MIN_IX_VERSION_FOR
 
 
 echo ""
-echo "-- hook installer TOML checks --"
+echo "-- Codex hook protocol checks --"
 
-# ensure_codex_hooks_enabled used to append a second `codex_hooks` assignment to
-# an existing [features] table, producing a duplicate key that no TOML parser
-# accepts -- and exiting 0 while doing it. The installer's output has to stay
-# loadable, so every case in tests/ ends in a real parse.
-python3 "$REPO/tests/test_installer_toml.py" >/dev/null 2>&1 \
-  && ok "hook installer keeps config.toml valid" \
-  || fail "hook installer TOML check failed"
+# Every hook's stdout is validated against the output schemas Codex 0.155.1
+# generates, and what each one puts in front of the model is checked: a
+# PreToolUse `systemMessage` only ever reached the user.
+python3 "$REPO/tests/test_codex_hook_protocol.py" >/dev/null 2>&1 \
+  && ok "hook output matches the Codex hook schemas" \
+  || fail "Codex hook protocol check failed"
 
 # Every hooks.json command was a `/bin/sh -lc` one-liner, so on native Windows
 # no hook could launch at all -- which also kept the PATHEXT fix in common.py

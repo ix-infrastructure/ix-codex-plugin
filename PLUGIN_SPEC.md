@@ -51,14 +51,14 @@ Fully operational v1.0.0 plugin. Mirrors the Claude plugin content model semanti
 ```
 ix-codex-plugin/
 ├── .codex/
-│   ├── config.toml              # Codex workspace config
 │   ├── hooks.json               # Codex hook registry
 │   └── hooks/
 │       ├── common.py            # Shared utilities: ix_health, caching, secret detection
 │       ├── session_start.py     # SessionStart → Ix operating guidance injection
 │       ├── user_prompt_submit.py # UserPromptSubmit → briefing (Pro only, 10-min gate)
-│       ├── pre_tool_use.py      # PreToolUse Bash → detect grep/rg, run ix text + locate
-│       └── stop.py              # Stop → async full map refresh
+│       ├── pre_tool_use.py      # PreToolUse Bash|apply_patch → grep/rg interception, pre-edit ix impact
+│       ├── post_tool_use.py     # PostToolUse Bash|apply_patch → guarded map after a write
+│       └── stop.py              # Stop → guarded background map refresh
 ├── plugins/
 │   └── ix-memory/
 │       ├── .codex-plugin/
