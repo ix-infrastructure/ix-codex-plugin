@@ -9,8 +9,15 @@ of that issue (`subprocess` needing `PATHEXT` to find `ix.CMD`, fixed in
 `common.py` by #19) unreachable, because the code carrying that fix never ran.
 
 The fix has two halves of its own: `.codex/hooks/_launch.py` does the walk-up
-the shell one-liner used to do, and the installer rewrites `hooks.json` on
-Windows to invoke it with an absolute interpreter and an absolute path.
+the shell one-liner used to do, and the installer gives every hook in
+`hooks.json` a `commandWindows` that invokes it with an absolute interpreter and
+an absolute path.
+
+That command runs under PowerShell: Codex 0.155 runs hooks through the session
+shell, which on Windows is `powershell.exe -NoProfile -Command`
+(codex-rs/core/src/session/mod.rs, shell-command/src/shell_detect.rs at
+rust-v0.155.1). The 2.4.x form, `"python" "launcher" name`, is a string followed
+by stray tokens there -- a parse error -- so it needs the call operator `&`.
 """
 
 from __future__ import annotations
@@ -48,9 +55,9 @@ launcher = load_module(REPO_ROOT / ".codex" / "hooks" / "_launch.py", "ix_launch
 SHIPPED_HOOKS_JSON = REPO_ROOT / ".codex" / "hooks.json"
 
 
-def commands_in(payload: dict) -> list[str]:
+def commands_in(payload: dict, key: str = "command") -> list[str]:
     return [
-        hook["command"]
+        hook[key]
         for blocks in payload["hooks"].values()
         for block in blocks
         for hook in block["hooks"]
@@ -112,23 +119,39 @@ class Rewrite(unittest.TestCase):
         return installer.render_hooks_json(self.target, self.launch)
 
     def test_is_a_no_op_off_windows(self) -> None:
-        # None means "install the source unchanged", which keeps install_file's
-        # content comparison — and re-running without --force — working.
+        # None means "install the source unchanged".
         os.name = "posix"
         before = self.target.read_text(encoding="utf-8")
         self.assertIsNone(self.render())
         self.assertEqual(before, self.target.read_text(encoding="utf-8"))
 
-    def test_removes_every_shell_invocation(self) -> None:
+    def test_every_hook_gets_a_shell_free_windows_command(self) -> None:
         os.name = "nt"
         rendered = self.render()
         self.assertIsNotNone(rendered)
-        commands = commands_in(json.loads(rendered))
+        commands = commands_in(json.loads(rendered), "commandWindows")
         self.assertTrue(commands)
         for command in commands:
             self.assertNotIn("/bin/sh", command)
             self.assertIn("_launch.py", command)
-            self.assertTrue(command.startswith(f'"{sys.executable}"'), command)
+            self.assertTrue(command.startswith(f"& '{sys.executable}' "), command)
+
+    def test_the_windows_command_is_a_powershell_invocation(self) -> None:
+        """Codex runs it as `powershell.exe -NoProfile -Command <it>`.
+
+        A leading quoted path without `&` is a string expression to PowerShell,
+        so the 2.4.x command never launched anything there.
+        """
+        os.name = "nt"
+        for command in commands_in(json.loads(self.render()), "commandWindows"):
+            self.assertRegex(command, r"^& '[^']+' '[^']+' [a-z_]+$")
+
+    def test_keeps_the_posix_command_for_other_machines(self) -> None:
+        # A repo-local hooks.json is shared through git; Codex picks
+        # commandWindows only on Windows.
+        os.name = "nt"
+        source = commands_in(json.loads(SHIPPED_HOOKS_JSON.read_text(encoding="utf-8")))
+        self.assertEqual(source, commands_in(json.loads(self.render())))
 
     def test_preserves_which_hook_each_event_fires(self) -> None:
         # A rewrite that pointed every event at the wrong handler would be worse
@@ -147,7 +170,7 @@ class Rewrite(unittest.TestCase):
         payload = json.loads(self.render())
         actual = {
             event: [
-                hook["command"].rsplit(" ", 1)[1]
+                hook["commandWindows"].rsplit(" ", 1)[1]
                 for block in blocks
                 for hook in block["hooks"]
             ]
@@ -161,9 +184,7 @@ class Rewrite(unittest.TestCase):
         self.assertIsNotNone(once)
         # Feed the rendered output back in: a second pass must find nothing to do.
         self.target.write_text(once, encoding="utf-8")
-        self.assertIsNone(
-            self.render(), "the `/bin/sh` guard is what stops a self-referential command"
-        )
+        self.assertIsNone(self.render(), "a rendered file must render to itself")
 
     def test_quotes_paths_containing_spaces(self) -> None:
         """#349 is a live report from a profile at `C:\\Users\\Win 10`."""
@@ -175,9 +196,15 @@ class Rewrite(unittest.TestCase):
         # stopped raising in 3.12 -- green locally, red on a 3.11 runner.
         launch = PureWindowsPath(r"C:\Users\Win 10\.codex\hooks\_launch.py")
         payload = json.loads(installer.render_hooks_json(self.target, launch))
-        command = payload["hooks"]["SessionStart"][0]["hooks"][0]["command"]
-        self.assertTrue(command.startswith(r'"C:\Users\Win 10\Python\python.exe" '))
-        self.assertIn(f'"{launch}"', command)
+        command = payload["hooks"]["SessionStart"][0]["hooks"][0]["commandWindows"]
+        self.assertTrue(command.startswith(r"& 'C:\Users\Win 10\Python\python.exe' "))
+        self.assertIn(f"'{launch}'", command)
+
+    def test_a_quote_or_dollar_in_a_path_stays_literal(self) -> None:
+        """Single-quoted PowerShell strings expand nothing; a `'` is doubled."""
+        self.assertEqual("'C:\\a$b'", installer.powershell_literal("C:\\a$b"))
+        self.assertEqual("'C:\\O''Brien'", installer.powershell_literal("C:\\O'Brien"))
+        self.assertEqual("'x\u2019\u2019y'", installer.powershell_literal("x\u2019y"))
 
     def test_leaves_an_unparseable_file_alone(self) -> None:
         os.name = "nt"
@@ -212,7 +239,7 @@ class Rewrite(unittest.TestCase):
         )
         rendered = self.render()
         self.assertIsNotNone(rendered)
-        for command in commands_in(json.loads(rendered)):
+        for command in commands_in(json.loads(rendered), "commandWindows"):
             self.assertNotIn("/bin/sh", command)
 
 
@@ -237,18 +264,12 @@ class InstallHooksEndToEnd(unittest.TestCase):
             capture_output=True, text=True,
         )
 
-    def installed_commands(self) -> list[str]:
+    def installed_commands(self, key: str = "command") -> list[str]:
         text = (self.target / ".codex" / "hooks.json").read_text(encoding="utf-8-sig")
-        return commands_in(json.loads(text))
+        return commands_in(json.loads(text), key)
 
     def test_a_second_install_is_not_an_error(self) -> None:
-        """The documented Windows one-liner never passes --force.
-
-        Rewriting after install_file left the installed file permanently
-        different from the source, so the next run's content comparison raised
-        FileExistsError — after install_plugin had written and before install_mcp
-        ran, i.e. a partial install with a traceback.
-        """
+        """The documented Windows one-liner never passes --force."""
         first = self.install()
         self.assertEqual(0, first.returncode, first.stderr)
         before = (self.target / ".codex" / "hooks.json").read_bytes()
@@ -294,9 +315,9 @@ class InstallHooksEndToEnd(unittest.TestCase):
         self.assertTrue((self.target / ".codex" / "hooks" / "_launch.py").is_file())
 
     @unittest.skipUnless(os.name == "nt", "the rewrite is Windows-only")
-    def test_no_hook_still_needs_bin_sh(self) -> None:
+    def test_every_hook_has_a_shell_free_windows_command(self) -> None:
         self.assertEqual(0, self.install().returncode)
-        commands = self.installed_commands()
+        commands = self.installed_commands("commandWindows")
         self.assertTrue(commands)
         for command in commands:
             self.assertNotIn("/bin/sh", command)
@@ -311,30 +332,6 @@ class InstallHooksEndToEnd(unittest.TestCase):
             SHIPPED_HOOKS_JSON.read_bytes(),
             (self.target / ".codex" / "hooks.json").read_bytes(),
         )
-
-
-class InstallRendered(unittest.TestCase):
-    """The write path hooks.json takes on Windows, which bypasses install_file."""
-
-    def setUp(self) -> None:
-        self._dir = tempfile.TemporaryDirectory()
-        self.addCleanup(self._dir.cleanup)
-        self.target = Path(self._dir.name) / "nested" / "hooks.json"
-
-    def test_matching_content_is_a_no_op(self) -> None:
-        installer.install_rendered(self.target, "same", force=False)
-        installer.install_rendered(self.target, "same", force=False)
-        self.assertEqual("same", self.target.read_text(encoding="utf-8"))
-
-    def test_differing_content_needs_force(self) -> None:
-        installer.install_rendered(self.target, "first", force=False)
-        with self.assertRaises(FileExistsError):
-            installer.install_rendered(self.target, "second", force=False)
-        self.assertEqual(
-            "first", self.target.read_text(encoding="utf-8"), "content was clobbered"
-        )
-        installer.install_rendered(self.target, "second", force=True)
-        self.assertEqual("second", self.target.read_text(encoding="utf-8"))
 
 
 class Launcher(unittest.TestCase):

@@ -29,6 +29,7 @@ Flags:
 Notes:
   - If none of --plugin, --hooks, or --mcp is passed, the installer defaults to
     --plugin --hooks --mcp.
+  - Re-running upgrades in place; --force is not needed for that.
   - --plugin does not activate the plugin in Codex. Restart Codex, then install or enable
     'ix-memory' from the marketplace before its skills appear.
   - Local Codex plugins do not reliably expose skill autocomplete, so type `$ix-tutorial`
