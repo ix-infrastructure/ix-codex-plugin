@@ -29,11 +29,12 @@ Examples:
 Flags:
   --plugin   Copy/register the ix-memory Codex plugin in a local marketplace
   --hooks    Install the .codex hook bundle (session, prompt, pre/post tool, stop)
-  --mcp      Install the ix-memory MCP server and print the codex mcp add command
+  --mcp      Register the Ix CLI's MCP server (`ix mcp`) with Codex
 
 Notes:
   - If none of --plugin, --hooks, or --mcp is passed, the installer defaults to
     --plugin --hooks --mcp.
+  - Re-running upgrades in place; --force is not needed for that.
   - --plugin does not activate the plugin in Codex. Restart Codex, then install or enable
     'ix-memory' from the marketplace before its skills appear.
   - This wrapper forwards all arguments to scripts/install_codex_integration.py.

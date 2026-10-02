@@ -171,6 +171,26 @@ Hooks:
 MCP:
 - registered with Codex as `ix-memory`, served by the Ix CLI (`ix mcp`) — no file is installed
 
+### Upgrading
+
+Re-run the same installer; no flags are needed. Over any earlier version it:
+
+- overwrites the files the plugin owns and removes the ones it no longer ships (recorded in
+  `.codex/ix-plugin-version.json`), and never touches anything else in `.codex/`;
+- merges into an existing `hooks.json`: the plugin's entries from any earlier version are
+  replaced in place, and every other hook in the file is kept;
+- checks everything before writing, then swaps the new files in together — a failed install
+  leaves the previous one exactly as it was;
+- runs `ix mcp install --host codex` with a time limit and reports how it went. A registration
+  of the `mcp/server.py` that 2.4.1 and earlier shipped is replaced (and the old file removed);
+  any other server already named `ix-memory` is left alone unless you pass `--force`;
+- removes the `/tmp/ix-codex-hooks` cache older hooks used, if it is yours and holds only cache files.
+
+If `hooks.json` changed, Codex asks you to trust the hooks again on its next start.
+
+`--force` is only for replacing what is not the plugin's: a marketplace entry named `ix-memory`
+that points elsewhere, a `hooks.json` that is not valid JSON, or a different `ix-memory` MCP server.
+
 ### Home-local install
 
 ```bash
@@ -270,13 +290,13 @@ ix-memory plugin v2.3.0 active | installed 2026-04-29 | commit a1b2c3d
 
 **To confirm a reinstall took effect:**
 
-1. Reinstall: `./install.sh --repo /path/to/project --hooks --force`
+1. Reinstall: `./install.sh --repo /path/to/project --hooks`
 2. Check the new timestamp: `cat /path/to/project/.codex/ix-plugin-version.json`
 3. Start a new Codex session — the version line in the session context will reflect the new
    install date and commit.
 
 If the version line is missing, the hooks were installed manually without using the installer.
-Run `./install.sh --repo /path/to/project --hooks --force` to write the file.
+Run `./install.sh --repo /path/to/project --hooks` to write the file.
 
 ## Repo Guidance
 

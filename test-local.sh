@@ -88,6 +88,14 @@ else
   printf '%s\n' "$map_out" | sed 's/^/      /'
 fi
 
+# Every installer run there is against a temp HOME/CODEX_HOME and a fake `ix`.
+if upgrade_out=$(python3 "$REPO/tests/test_installer_upgrade.py" 2>&1); then
+  ok "re-running the installer upgrades any earlier install, merges hooks, never half-writes"
+else
+  fail "installer upgrade tests failed"
+  printf '%s\n' "$upgrade_out" | sed 's/^/      /'
+fi
+
 if argv_out=$(python3 "$REPO/tests/test_ix_argv_resolution.py" 2>&1); then
   ok "ix invocations resolve through PATHEXT and refuse cmd metacharacters"
 else

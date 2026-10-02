@@ -281,9 +281,12 @@ class InstallerIxLaunchTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as target:
             argv = ["install_codex_integration.py", "--repo", target, "--mcp"]
+            # CODEX_HOME too: the installer reads the Codex config to recognise a
+            # stale registration, and that must be a fixture, never the real one.
             with patch.object(self.installer.shutil, "which", return_value=which_returns), \
                     patch.object(self.installer.subprocess, "run", fake_run), \
                     patch.object(sys, "argv", argv), \
+                    patch.dict(os.environ, {"CODEX_HOME": str(Path(target) / "codex-home")}), \
                     redirect_stdout(io.StringIO()) as out:
                 self.installer.main()
         return calls, out.getvalue()
@@ -294,7 +297,7 @@ class InstallerIxLaunchTest(unittest.TestCase):
         self.assertEqual(1, len(register), f"expected one registration, got {calls}")
         self.assertEqual(
             [WINDOWS_SHIM, "mcp", "install", "--host", "codex"],
-            register[0],
+            register[0][:5],
             "the bare name never resolves through CreateProcess on Windows",
         )
 
