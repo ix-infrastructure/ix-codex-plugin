@@ -215,10 +215,10 @@ class RealIxContract(unittest.TestCase):
         ]
         return {**os.environ, "PATH": os.pathsep.join(path), "XDG_STATE_HOME": str(state)}
 
-    def install(self) -> tuple[subprocess.CompletedProcess[str], dict]:
+    def install(self, *extra: str) -> tuple[subprocess.CompletedProcess[str], dict]:
         result = subprocess.run(
             [sys.executable, str(REPO / "scripts" / "install_codex_integration.py"),
-             "--repo", str(self.repo), "--hooks", "--mcp"],
+             "--repo", str(self.repo), "--hooks", "--mcp", *extra],
             env=self.host_env(self.tmp / "state-install"),
             capture_output=True, text=True, timeout=120,
         )
@@ -234,6 +234,20 @@ class RealIxContract(unittest.TestCase):
         # back to "Ran `ix mcp install`" (unparsed) or reporting a failure.
         self.assertIn("the Codex CLI (`codex`) is not on PATH", result.stdout, result.stdout)
         self.assertNotIn("unknown option", result.stdout + result.stderr)
+
+    def test_installer_force_reaches_real_ix_mcp_install(self) -> None:
+        """`--force` adds `ix mcp install --force`; this CLI must accept it.
+
+        The installer falls back quietly when an older CLI rejects --force, so
+        without this case a release that dropped the flag would leave the
+        suite green.
+        """
+        result, _ = self.install("--force")
+        output = result.stdout + result.stderr
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertNotIn("unknown option", output)
+        self.assertNotIn("has no --force", output)
+        self.assertIn("the Codex CLI (`codex`) is not on PATH", result.stdout, result.stdout)
 
     def run_hook(self, hooks: dict, event: str, payload: dict, state: Path) -> subprocess.CompletedProcess[str]:
         """Run the command hooks.json registers for `event`, the way Codex does."""
