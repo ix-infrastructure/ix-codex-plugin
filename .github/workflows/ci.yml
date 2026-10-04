@@ -101,6 +101,74 @@ jobs:
         shell: bash
         run: python -m unittest discover -s tests -p 'test_*.py' -v
 
+  # ── Against a released ix CLI ────────────────────────────────────────────
+  # Everything above fakes `ix`, so a flag Ix renames or an output key it
+  # changes breaks the hooks with every test still green. This job installs a
+  # pinned Ix release, verified against its published checksum, and runs
+  # tests/real_ix_contract.py: the installer and the hooks against the real
+  # CLI, with no backend (IX_ENDPOINT is a closed port). It fails if any argv
+  # the hooks or installer build is rejected by that release.
+  #
+  # Move the ix-version pin deliberately, when the plugin is meant to track a
+  # newer CLI; that pin is a dependency, not this plugin's own version.
+  real-ix:
+    name: Real ix (v${{ matrix.ix-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        ix-version: ['0.12.0']
+    env:
+      IX_VERSION: ${{ matrix.ix-version }}
+      IX_EXPECTED_VERSION: ${{ matrix.ix-version }}
+      # sha256 of ix-<version>-linux-amd64.tar.gz, pinned here so a release
+      # asset replaced after the fact (tarball and .sha256 together) fails the
+      # job. Bump it with the ix-version pin.
+      IX_SHA256: 'b9606253c5e300dbf4b933c82c6e0dc1d40a028aa344b5dc90dfe6dc34d89817'
+      IX_ENDPOINT: http://127.0.0.1:1
+      IX_NO_UPDATE_CHECK: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+
+      # The release tarball's `ix` launcher runs on Node 22+.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      # `ix text` shells out to ripgrep.
+      - name: Install ripgrep
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ripgrep
+
+      - name: Install ix ${{ matrix.ix-version }}
+        run: |
+          set -euo pipefail
+          asset="ix-${IX_VERSION}-linux-amd64.tar.gz"
+          base="https://github.com/ix-infrastructure/Ix/releases/download/v${IX_VERSION}"
+          dl="$RUNNER_TEMP/ix-dl"
+          mkdir -p "$dl" "$RUNNER_TEMP/ix" "$RUNNER_TEMP/ix-home"
+          curl -fsSL --retry 3 -o "$dl/$asset" "$base/$asset"
+          curl -fsSL --retry 3 -o "$dl/$asset.sha256" "$base/$asset.sha256"
+          (cd "$dl" && sha256sum -c "$asset.sha256")
+          echo "$IX_SHA256  $dl/$asset" | sha256sum -c -
+          tar -xzf "$dl/$asset" --strip-components=1 -C "$RUNNER_TEMP/ix"
+          echo "$RUNNER_TEMP/ix" >> "$GITHUB_PATH"
+          echo "IX_HOME=$RUNNER_TEMP/ix-home" >> "$GITHUB_ENV"
+
+      - name: ix --version
+        run: |
+          command -v ix
+          ix --version
+
+      - name: Hooks and installer against the real CLI
+        run: python tests/real_ix_contract.py -v
+
   # ── Aggregate gate ───────────────────────────────────────────────────────
   # One stable required-status-check context. Fails if a needed job failed OR was
   # skipped/cancelled, so the job graph can be reshaped without orphaning the
@@ -108,12 +176,14 @@ jobs:
   ci-success:
     name: CI Passed
     if: always()
-    needs: [validate, tests]
+    needs: [validate, tests, real-ix]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded
         run: |
           echo "validate=${{ needs.validate.result }}"
           echo "tests=${{ needs.tests.result }}"
+          echo "real-ix=${{ needs.real-ix.result }}"
           [ "${{ needs.validate.result }}" = "success" ]
           [ "${{ needs.tests.result }}" = "success" ]
+          [ "${{ needs.real-ix.result }}" = "success" ]
