@@ -1,6 +1,6 @@
 ---
 name: ix-tutorial
-description: Explain how to use the Ix Memory Codex plugin, including $-prefixed skill invocation, when to use a specific skill, and example prompts for common workflows.
+description: Use when learning how to use the Ix Memory Codex plugin. Explain $-prefixed skill invocation, skill selection, and example prompts for common workflows.
 argument-hint: [optional topic or workflow]
 ---
 
