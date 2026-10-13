@@ -14,21 +14,12 @@ from common import (
 
 _STATIC_GUIDANCE = "\n".join([
     "Ix Memory is available in this workspace.",
-    "Use these cognitive skills to reason about the codebase.",
-    "IMPORTANT: invoke skills by name as Codex skills — do NOT run them as shell commands.",
-    "- ix-understand [target] — build a mental model of a system or the whole repo",
-    "- ix-investigate <symbol> — deep dive into a component",
-    "- ix-impact <target> — change-risk analysis before non-trivial edits",
-    "- ix-plan <targets...> — risk-ordered plan for multi-file work",
-    "- ix-debug <symptom> — root-cause analysis from a symptom",
-    "- ix-architecture [scope] — design health and coupling analysis",
-    "- ix-docs <target> — narrative-first documentation",
-    "",
-    "Behavioral rules:",
-    "- Graph before code.",
-    "- Read at symbol level only with `ix read <symbol>`.",
-    "- Stop early once the question is answered.",
-    "- Label graph-backed facts separately from inferences.",
+    "Before rg/grep for symbols, run `ix locate <symbol>` or `ix search <term>`.",
+    "Run `ix callers <symbol>` and `ix impact <symbol>` before editing a symbol.",
+    "Ambiguous? Retry with `--pick N`, `--path <path>`, or `--kind <kind>`.",
+    "Not found means a new or misspelled symbol: search a partial name, then rg for symbols you just wrote.",
+    "Use $ix-* skills in Codex, never as shell commands. Read symbols with `ix read <symbol>`. "
+    "Stop when answered; label graph facts vs inferences.",
 ])
 
 

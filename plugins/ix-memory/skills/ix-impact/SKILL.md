@@ -1,6 +1,6 @@
 ---
 name: ix-impact
-description: Change risk analysis — blast radius, affected systems, and what to test. Depth scales with risk level; low-risk targets stop early.
+description: Use when assessing risk before an edit. Identify blast radius, affected systems, and what to test; depth scales with risk and low-risk targets stop early.
 argument-hint: <symbol or file>
 ---
 

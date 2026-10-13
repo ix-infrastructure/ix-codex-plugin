@@ -1,6 +1,6 @@
 ---
 name: ix-investigate
-description: Deep dive into a symbol, feature, or bug. Graph-first, minimal code reads, early stopping when sufficient evidence found.
+description: Use when investigating a symbol, feature, or bug before modifying or explaining it. Graph-first, minimal code reads, early stopping once evidence is sufficient.
 argument-hint: <symbol, feature description, or "how does X work">
 ---
 
