@@ -1,6 +1,6 @@
 ---
 name: ix-docs
-description: Generate narrative-first, importance-weighted documentation for a repo, system, or subsystem with a selective reference layer. Use --full for deeper module/class/method coverage.
+description: Use when writing onboarding, handoff, or reference documentation for a repo, system, or subsystem. Generate narrative-first docs with a selective reference layer; use --full for deeper module/class/method coverage.
 argument-hint: <target> [--full] [--style narrative|reference|hybrid] [--split] [--single-doc] [--out <path>]
 ---
 

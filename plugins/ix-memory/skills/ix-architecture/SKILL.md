@@ -1,6 +1,6 @@
 ---
 name: ix-architecture
-description: Analyze system design — structure, coupling, code smells, and high-risk hotspots. Purely graph-based, no code reads.
+description: Use when reviewing system design, coupling, code smells, or high-risk hotspots. Purely graph-based, no code reads.
 argument-hint: [optional scope — path, subsystem name, or empty for whole system]
 ---
 
