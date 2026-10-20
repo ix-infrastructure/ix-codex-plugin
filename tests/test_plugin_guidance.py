@@ -6,6 +6,7 @@
 The text checks run without Ix. The CLI checks also run in real_ix_contract.py,
 whose entry point fails on skips, so the released-CLI CI job enforces them.
 Only --help is executed: examples and placeholders never become shell commands.
+On the OSS CLI a Pro command's help is a stub's, so its flags go unchecked there.
 """
 
 from __future__ import annotations
@@ -94,6 +95,18 @@ def help_options(help_text: str) -> set[str]:
     return set(re.findall(r"^\s+(?:-\w, )?(--[a-z][a-z-]*)\b", section, re.MULTILINE))
 
 
+def is_pro_stub_help(help_text: str, command: tuple[str, ...]) -> bool:
+    """True for the OSS CLI's placeholder for a Pro command.
+
+    Without @ix/pro every Pro command is registered as a stub that swallows its
+    arguments (`[args...]`) and declares only --help, so `ix plan list --help`
+    prints the help of the `plan` stub. Its options say nothing about the real
+    command's, so documented Pro flags can only be checked where Pro is installed.
+    """
+    usage = f"Usage: ix {command[0]} [options] [args...]\n"
+    return help_text.startswith(usage) and help_options(help_text) == {"--help"}
+
+
 def static_guidance() -> str:
     tree = ast.parse((REPO / ".codex" / "hooks" / "session_start.py").read_text(encoding="utf-8"))
     for node in tree.body:
@@ -153,6 +166,19 @@ class PluginGuidanceTest(unittest.TestCase):
         self.assertEqual([("locate",), ("trace",)], [item.command for item in result])
         self.assertEqual(frozenset({"--upstream", "--downstream"}), result[1].flags)
 
+    def test_pro_stub_help_is_told_apart_from_real_help(self) -> None:
+        # Verbatim from ix 0.12.0 without @ix/pro: `ix plan list --help`.
+        stub = ("Usage: ix plan [options] [args...]\n\nManage plans and plan tasks\n\n"
+                "Options:\n  -h, --help  display help for command\n")
+        self.assertTrue(is_pro_stub_help(stub, ("plan", "list")))
+        self.assertTrue(is_pro_stub_help(stub.replace("plan", "decisions", 1), ("decisions",)))
+        real = "Usage: ix plan list [options]\n\nOptions:\n  --format <fmt>  Format\n  -h, --help  Help\n"
+        self.assertFalse(is_pro_stub_help(real, ("plan", "list")))
+        # A real command that happens to take no options is not a stub.
+        bare = "Usage: ix stats [options]\n\nOptions:\n  -h, --help  Help\n"
+        self.assertFalse(is_pro_stub_help(bare, ("stats",)))
+        self.assertFalse(is_pro_stub_help(stub, ("bug", "list")))
+
 
 class PluginCliContractTest(unittest.TestCase):
     @classmethod
@@ -177,10 +203,15 @@ class PluginCliContractTest(unittest.TestCase):
                 if "is not available to agents; allowed:" in result.stderr:
                     raise unittest.SkipTest("command help denied by environment: " + " ".join(command))
                 # Negative command claims (e.g. "there is no ix bugs") have no flags.
+                # The CLI answers an unknown command with its top-level help and
+                # exit 0, so the claim holds when no help declares that command.
                 if all(item.forbidden and not item.flags for item in examples):
-                    self.assertNotEqual(0, result.returncode, result.stdout)
+                    self.assertNotRegex(result.stdout + result.stderr,
+                                        r"Usage: ix " + re.escape(" ".join(command)) + r"(?:\s|$)")
                     continue
                 self.assertEqual(0, result.returncode, result.stderr)
+                if is_pro_stub_help(result.stdout, command):
+                    continue
                 self.assertIn("Usage: ix " + " ".join(command), result.stdout)
                 options = help_options(result.stdout)
                 for item in examples:
