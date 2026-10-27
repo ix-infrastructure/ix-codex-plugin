@@ -190,11 +190,11 @@ class RealIxContract(unittest.TestCase):
 
         # status, briefing and the installer still see "no answer"...
         self.assertIsNone(common.run_ix_json(argv, cwd=self.repo, timeout=30))
-        # ...and the lookup hooks say what is missing instead of a risk level.
+        # ...and the lookup hooks read it as "not mapped" but add nothing for it.
         self.assertEqual(("not_mapped", record), common.run_ix_lookup(argv, cwd=self.repo, timeout=30))
-        self.assertEqual(f"[ix] {common.NOT_MAPPED_HINT}", common.build_write_warning("widget.py", self.repo))
-        self.assertIn(
-            common.NOT_MAPPED_HINT,
+        self.assertIsNone(common.build_write_warning("widget.py", self.repo))
+        self.assertNotIn(
+            "not mapped",
             common.build_read_message(str(self.repo / "widget.py"), self.repo) or "",
         )
 

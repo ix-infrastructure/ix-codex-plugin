@@ -513,17 +513,28 @@ def _lookup_items(payload: dict, key: str) -> tuple[list, int]:
     return items[:MAX_LOOKUP_ITEMS], max(0, len(items) - MAX_LOOKUP_ITEMS)
 
 
-def _format_candidate(position: int, candidate: object) -> str:
+def _pick_number(candidate: object) -> int | None:
+    """ix's own `--pick` number for a candidate, or None.
+
+    Never the list position: how ix numbers `--pick` is ix's to say, and a
+    guessed number would send the model's retry to the wrong entity.
+    """
+    pick = candidate.get("pick") if isinstance(candidate, dict) else None
+    return pick if isinstance(pick, int) and not isinstance(pick, bool) else None
+
+
+def _format_candidate(candidate: object) -> str:
     if not isinstance(candidate, dict):
-        return f"[{position}] {candidate}"
-    pick = candidate.get("pick")
-    number = pick if isinstance(pick, int) and not isinstance(pick, bool) else position
+        return str(candidate)
     where = str(candidate.get("path") or "")
     line = candidate.get("line")
     if where and isinstance(line, int) and not isinstance(line, bool):
         where += f":{line}"
     details = ", ".join(part for part in (str(candidate.get("kind") or ""), where) if part)
-    label = f"[{number}] {candidate.get('name') or '?'}"
+    number = _pick_number(candidate)
+    label = str(candidate.get("name") or "?")
+    if number is not None:
+        label = f"[{number}] {label}"
     return f"{label} ({details})" if details else label
 
 
@@ -537,31 +548,29 @@ def _format_suggestion(suggestion: object) -> str:
     return name or path
 
 
-NOT_MAPPED_HINT = "workspace not mapped yet -- run `ix map <repo root>` to build the graph"
-
-
 def describe_lookup(outcome: str, payload: dict | list | None, target: str) -> str:
     """One short line for a lookup ix answered without results, or "".
 
     Empty for `ok` and `error`, and for a not-found with no suggestions: the
     hooks enrich the model's own commands, and "not found" alone gives it
-    nothing to act on -- most grep patterns are not symbol names.
+    nothing to act on -- most grep patterns are not symbol names. Empty for
+    `not_mapped` too: the hooks run on every grep, read and write, and mapping
+    is the user's call (an automatic map never creates a workspace).
     """
-    if outcome == "not_mapped":
-        return NOT_MAPPED_HINT
     if not isinstance(payload, dict):
         return ""
     if outcome == "ambiguous":
         candidates, more = _lookup_items(payload, "candidates")
         if not candidates:
             return ""
-        listed = "; ".join(
-            _format_candidate(position, candidate)
-            for position, candidate in enumerate(candidates, start=1)
-        )
+        listed = "; ".join(map(_format_candidate, candidates))
         if more:
             listed += f" (+{more} more)"
-        return f"'{target}' is ambiguous: {listed} -- retry with --pick <n> or --path <file>"
+        if any(_pick_number(candidate) is not None for candidate in candidates):
+            retry = "--pick <n> or --path <file>"
+        else:
+            retry = "--path <file>"
+        return f"'{target}' is ambiguous: {listed} -- retry with {retry}"
     if outcome == "not_found":
         suggestions, more = _lookup_items(payload, "suggestions")
         names = [name for name in map(_format_suggestion, suggestions) if name]
@@ -1115,9 +1124,15 @@ def build_write_warnings(paths: list[str], cwd: str | Path | None) -> str | None
         return None
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(targets)) as executor:
         warnings = list(executor.map(lambda path: build_write_warning(path, cwd), targets))
-    # _unique: an unmapped workspace says so once, not once per file.
-    found = _unique([warning for warning in warnings if warning])
+    found = [warning for warning in warnings if warning]
     return "\n".join(found) if found else None
+
+
+def _write_target_exists(file_path: str, cwd: str | Path | None) -> bool:
+    path = Path(file_path)
+    if not path.is_absolute():
+        path = Path(cwd or os.getcwd()) / path
+    return path.exists()
 
 
 def build_write_warning(file_path: str, cwd: str | Path | None) -> str | None:
@@ -1127,11 +1142,11 @@ def build_write_warning(file_path: str, cwd: str | Path | None) -> str | None:
         return None
 
     outcome, impact = run_ix_lookup(["ix", "impact", file_path, "--format", "json"], cwd=cwd, timeout=10)
-    if outcome == "not_mapped":
-        return f"[ix] {NOT_MAPPED_HINT}"
+    if outcome == "not_found" and not _write_target_exists(file_path, cwd):
+        # A file this patch creates is not in the graph yet; "did you mean"
+        # would only point the model at a similarly named file.
+        return None
     if outcome != "ok":
-        # Not found with no suggestions is silent: a file this patch creates is
-        # not in the graph yet.
         note = describe_lookup(outcome, impact, file_path)
         return f"[ix] {filename}: impact not checked, {note}" if note else None
     if not isinstance(impact, dict):

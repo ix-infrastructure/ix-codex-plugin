@@ -21,6 +21,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -43,11 +44,16 @@ AMBIGUOUS = {
     "error": "ambiguous_target",
     "message": "'Widget' matches 3 entities",
     "candidates": [
-        {"name": "Widget", "kind": "class", "path": "src/ui/widget.ts", "line": 12},
-        {"name": "Widget", "kind": "interface", "path": "src/api/types.ts", "line": 40},
-        {"name": "Widget", "kind": "function", "path": "lib/widget.py"},
+        {"name": "Widget", "kind": "class", "path": "src/ui/widget.ts", "line": 12, "pick": 1},
+        {"name": "Widget", "kind": "interface", "path": "src/api/types.ts", "line": 40, "pick": 2},
+        {"name": "Widget", "kind": "function", "path": "lib/widget.py", "pick": 3},
     ],
 }
+# Candidates without ix's own `pick` numbers.
+AMBIGUOUS_NO_PICK = dict(
+    AMBIGUOUS,
+    candidates=[{k: v for k, v in c.items() if k != "pick"} for c in AMBIGUOUS["candidates"]],
+)
 # `ix locate` keys its ambiguity record on `code`, with no `error` key.
 LOCATE_AMBIGUOUS = {key: value for key, value in AMBIGUOUS.items() if key != "error"}
 LOCATE_AMBIGUOUS["code"] = "ambiguous_target"
@@ -160,10 +166,24 @@ class SearchPathTest(unittest.TestCase):
         self.assertNotIn("not found", message)
         self.assertIn("2 text hits", message)
 
-    def test_exit_4_says_how_to_map(self) -> None:
-        message = self.search((4, NOT_MAPPED), text=(0, {"results": []}))
-        self.assertIn("not mapped yet", message)
-        self.assertIn("ix map", message)
+    def test_pick_numbers_come_from_ix_never_the_list_position(self) -> None:
+        message = self.search((2, dict(AMBIGUOUS, candidates=[
+            {"name": "Widget", "kind": "class", "pick": 0},
+            {"name": "Widget", "kind": "interface", "pick": 1},
+        ])))
+        self.assertIn("[0] Widget (class); [1] Widget (interface)", message)
+        message = self.search((2, AMBIGUOUS_NO_PICK))
+        self.assertIn("is ambiguous: Widget (class, src/ui/widget.ts:12); Widget (interface", message)
+        self.assertNotIn("[1]", message)
+        self.assertNotIn("--pick", message)
+        self.assertIn("retry with --path <file>", message)
+
+    def test_exit_4_adds_nothing(self) -> None:
+        # Runs on every grep; mapping is the user's call, not the model's.
+        self.assertIsNone(self.search((4, NOT_MAPPED), text=(0, {"results": []})))
+        message = self.search((4, NOT_MAPPED))
+        self.assertNotIn("mapped", message)
+        self.assertNotIn("ix map", message)
 
     def test_an_older_ix_exiting_1_with_the_record(self) -> None:
         self.assertIn("[1] Widget (class, src/ui/widget.ts:12)", self.search((1, LOCATE_AMBIGUOUS)))
@@ -188,7 +208,7 @@ class SearchPathTest(unittest.TestCase):
         self.assertIn("symbol: Widget (class, widget.ts)", self.search((0, resolved)))
 
     def test_long_candidate_lists_are_capped(self) -> None:
-        many = dict(AMBIGUOUS, candidates=[{"name": f"W{i}", "kind": "class"} for i in range(12)])
+        many = dict(AMBIGUOUS, candidates=[{"name": f"W{i}", "kind": "class", "pick": i + 1} for i in range(12)])
         message = self.search((2, many))
         self.assertIn("[5] W4 (class)", message)
         self.assertNotIn("[6]", message)
@@ -214,14 +234,16 @@ class ReadPathTest(unittest.TestCase):
         self.assertIn("not found", message)
         self.assertIn("did you mean: Widget (src/ui/widget.ts), WidgetFactory", message)
 
-    def test_exit_4_says_it_once(self) -> None:
-        message = self.read(inventory=(1, NOT_MAPPED), overview=(4, NOT_MAPPED), impact=(4, NOT_MAPPED))
-        self.assertEqual(1, message.count("not mapped yet"), message)
-        self.assertIn("ix map", message)
+    def test_exit_4_adds_nothing(self) -> None:
+        for code in (4, 1):  # 1: an older ix
+            with self.subTest(code=code):
+                self.assertIsNone(
+                    self.read(inventory=(1, NOT_MAPPED), overview=(code, NOT_MAPPED), impact=(code, NOT_MAPPED))
+                )
 
     def test_an_older_ix_exiting_1_with_the_record(self) -> None:
-        message = self.read(inventory=(1, NOT_MAPPED), overview=(1, NOT_MAPPED), impact=(1, NOT_MAPPED))
-        self.assertIn("not mapped yet", message)
+        message = self.read(inventory=(1, REAL_ERROR), overview=(1, AMBIGUOUS), impact=(1, AMBIGUOUS))
+        self.assertIn("[1] Widget (class, src/ui/widget.ts:12)", message)
 
     def test_real_error_timeout_and_bad_json_behave_as_before(self) -> None:
         self.assertIsNone(self.read(inventory=(1, REAL_ERROR), overview=(1, REAL_ERROR), impact=TimeoutError))
@@ -239,10 +261,17 @@ class ReadPathTest(unittest.TestCase):
 
 
 class WritePathTest(unittest.TestCase):
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        (self.root / "src" / "ui").mkdir(parents=True)
+        (self.root / "src" / "ui" / "widget.ts").write_text("export class Widget {}\n")
+
     def warn(self, impact, path="src/ui/widget.ts"):
         common = _load()
         with patch.object(common.subprocess, "run", ScriptedIx(impact=impact).run):
-            return common.build_write_warning(path, None)
+            return common.build_write_warning(path, self.root)
 
     def test_exit_2_lists_candidates(self) -> None:
         message = self.warn((2, AMBIGUOUS))
@@ -252,15 +281,22 @@ class WritePathTest(unittest.TestCase):
 
     def test_exit_3_shows_the_suggestions_and_stays_quiet_without(self) -> None:
         self.assertIn("did you mean: Widget (src/ui/widget.ts), WidgetFactory", self.warn((3, NOT_FOUND)))
-        # A file the patch is creating is not in the graph yet; that is expected.
+        self.assertIn(
+            "did you mean",
+            self.warn((3, NOT_FOUND), path=str(self.root / "src" / "ui" / "widget.ts")),
+        )
         self.assertIsNone(self.warn((3, NOT_FOUND_BARE)))
 
-    def test_exit_4_once_for_many_files(self) -> None:
+    def test_a_new_file_gets_no_suggestions(self) -> None:
+        # A file the patch is creating is not in the graph yet; that is expected,
+        # and a "did you mean" would point the model at some other file.
+        self.assertIsNone(self.warn((3, NOT_FOUND), path="src/ui/new_widget.ts"))
+        self.assertIsNone(self.warn((1, NOT_FOUND), path=str(self.root / "new_widget.ts")))
+
+    def test_exit_4_adds_nothing(self) -> None:
         common = _load()
         with patch.object(common.subprocess, "run", ScriptedIx(impact=(4, NOT_MAPPED)).run):
-            message = common.build_write_warnings(["a.py", "b.py", "c.py"], None)
-        self.assertEqual(1, message.count("not mapped yet"), message)
-        self.assertIn("ix map", message)
+            self.assertIsNone(common.build_write_warnings(["a.py", "b.py", "c.py"], self.root))
 
     def test_an_older_ix_exiting_1_with_the_record(self) -> None:
         self.assertIn("[1] Widget", self.warn((1, AMBIGUOUS)))
