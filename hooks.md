@@ -60,6 +60,8 @@ in `agents/` remain documentation-only until confirmed.
 
 **Priority order:** write detection → search interception → read interception (first match wins).
 
+**When a lookup has no results:** `ix locate`, `ix overview` and `ix impact` exit 2 (ambiguous target), 3 (not found) or 4 (workspace not mapped) with a JSON record on stdout; older ix exits 1 with the same record. The hook passes that answer on in one line instead of dropping it: the first 5 candidates with their `--pick` numbers and a hint to retry with `--pick <n>` or `--path`, the suggestions for a target it could not find, or how to map the workspace. A not-found with no suggestions adds nothing. Any other failure stays silent, as before.
+
 ## What The PostToolUse Hook Does
 
 - Reads the same tool input from the PostToolUse event

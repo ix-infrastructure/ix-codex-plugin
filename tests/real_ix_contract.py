@@ -174,22 +174,29 @@ class RealIxContract(unittest.TestCase):
         ]
         self.assertFalse(rejected, "ix rejected an argv the hooks build:\n" + "\n".join(rejected))
 
-    # ── 3. ix's real error record is read as "no answer", never as one ──────
+    # ── 3. ix's not-mapped record is never taken for a result ───────────────
 
     def test_workspace_not_mapped_record_is_not_taken_for_a_result(self) -> None:
         common = load_common(self.tmp / "state")
         argv = ["ix", "impact", "widget.py", "--format", "json"]
         raw = common.run_command(argv, cwd=self.repo, timeout=30)
         self.assertIsNotNone(raw)
-        self.assertNotEqual(0, raw.returncode, "an unmapped workspace must fail")
+        # 4 since Ix #853; 1 before it.
+        self.assertIn(raw.returncode, (1, 4), "an unmapped workspace must fail")
         record = common.parse_json_output(raw.stdout)
         self.assertIsInstance(record, dict, f"expected a JSON error record, got {raw.stdout!r}")
         self.assertEqual("workspace_not_mapped", record.get("error"))
         self.assertIn("message", record)
 
+        # status, briefing and the installer still see "no answer"...
         self.assertIsNone(common.run_ix_json(argv, cwd=self.repo, timeout=30))
-        self.assertIsNone(common.build_write_warning("widget.py", self.repo))
-        self.assertIsNone(common.build_read_message(str(self.repo / "widget.py"), self.repo))
+        # ...and the lookup hooks say what is missing instead of a risk level.
+        self.assertEqual(("not_mapped", record), common.run_ix_lookup(argv, cwd=self.repo, timeout=30))
+        self.assertEqual(f"[ix] {common.NOT_MAPPED_HINT}", common.build_write_warning("widget.py", self.repo))
+        self.assertIn(
+            common.NOT_MAPPED_HINT,
+            common.build_read_message(str(self.repo / "widget.py"), self.repo) or "",
+        )
 
     # ── 4. backend down: health fails closed, Pro stub is a definitive "no" ─
 
