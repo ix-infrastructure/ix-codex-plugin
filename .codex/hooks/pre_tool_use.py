@@ -34,7 +34,7 @@ def main() -> None:
 
     write_paths = files_written(event)
     if write_paths:
-        message = build_write_warnings(write_paths, workspace_root)
+        message = build_write_warnings(write_paths, workspace_root, event.get("cwd"))
     elif event.get("tool_name") != APPLY_PATCH_TOOL:
         # Search and read interception are about shell commands; a patch that
         # names no file has nothing for them to look at.

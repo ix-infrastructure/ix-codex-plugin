@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Callable
 
 
 def _default_state_dir() -> Path:
@@ -467,6 +468,119 @@ def run_ix_json(
     return parse_json_output(result.stdout)
 
 
+# A graph lookup (`locate`, `overview`, `impact`, ...) exits 2, 3 or 4 when ix
+# answered with a reason rather than results (Ix #853): the record on stdout
+# carries this slug under `error` (`code` for `locate`). Before #853 the same
+# records came with exit 1, so the slug decides, not the exit code.
+LOOKUP_OUTCOMES = {
+    "ambiguous_target": "ambiguous",
+    "unresolved_target": "not_found",
+    "workspace_not_mapped": "not_mapped",
+}
+LOOKUP_ANSWER_EXITS = {1, 2, 3, 4}
+# What one lookup answer may add to a hook's message.
+MAX_LOOKUP_ITEMS = 5
+
+
+def run_ix_lookup(
+    argv: list[str], cwd: str | Path | None = None, timeout: int = 10
+) -> tuple[str, dict | list | None]:
+    """Run a graph lookup: `(outcome, payload)`.
+
+    `ok` with the parsed stdout on exit 0; `ambiguous`, `not_found` or
+    `not_mapped` with ix's record; `error` with None for everything else -- a
+    real error, a timeout, stdout that is not one of those records. Unlike
+    run_ix_json, a non-zero exit can be an answer, so this is for lookups only.
+    """
+    result = run_command(argv, cwd=cwd, timeout=timeout)
+    if not result:
+        return "error", None
+    payload = parse_json_output(result.stdout or "")
+    if result.returncode == 0:
+        return "ok", payload
+    if result.returncode in LOOKUP_ANSWER_EXITS and isinstance(payload, dict):
+        slug = payload.get("error") or payload.get("code")
+        outcome = LOOKUP_OUTCOMES.get(slug) if isinstance(slug, str) else None
+        if outcome:
+            return outcome, payload
+    return "error", None
+
+
+def _lookup_items(payload: dict, key: str) -> tuple[list, int]:
+    items = payload.get(key)
+    if not isinstance(items, list):
+        return [], 0
+    return items[:MAX_LOOKUP_ITEMS], max(0, len(items) - MAX_LOOKUP_ITEMS)
+
+
+def _pick_number(candidate: object) -> int | None:
+    """ix's own `--pick` number for a candidate, or None.
+
+    Never the list position: how ix numbers `--pick` is ix's to say, and a
+    guessed number would send the model's retry to the wrong entity.
+    """
+    pick = candidate.get("pick") if isinstance(candidate, dict) else None
+    return pick if isinstance(pick, int) and not isinstance(pick, bool) else None
+
+
+def _format_candidate(candidate: object) -> str:
+    if not isinstance(candidate, dict):
+        return str(candidate)
+    where = str(candidate.get("path") or "")
+    line = candidate.get("line")
+    if where and isinstance(line, int) and not isinstance(line, bool):
+        where += f":{line}"
+    details = ", ".join(part for part in (str(candidate.get("kind") or ""), where) if part)
+    number = _pick_number(candidate)
+    label = str(candidate.get("name") or "?")
+    if number is not None:
+        label = f"[{number}] {label}"
+    return f"{label} ({details})" if details else label
+
+
+def _format_suggestion(suggestion: object) -> str:
+    if not isinstance(suggestion, dict):
+        return str(suggestion)
+    name = str(suggestion.get("name") or "")
+    path = str(suggestion.get("path") or "")
+    if name and path:
+        return f"{name} ({path})"
+    return name or path
+
+
+def describe_lookup(outcome: str, payload: dict | list | None, target: str) -> str:
+    """One short line for a lookup ix answered without results, or "".
+
+    Empty for `ok` and `error`, and for a not-found with no suggestions: the
+    hooks enrich the model's own commands, and "not found" alone gives it
+    nothing to act on -- most grep patterns are not symbol names. Empty for
+    `not_mapped` too: the hooks run on every grep, read and write, and mapping
+    is the user's call (an automatic map never creates a workspace).
+    """
+    if not isinstance(payload, dict):
+        return ""
+    if outcome == "ambiguous":
+        candidates, more = _lookup_items(payload, "candidates")
+        if not candidates:
+            return ""
+        listed = "; ".join(map(_format_candidate, candidates))
+        if more:
+            listed += f" (+{more} more)"
+        if any(_pick_number(candidate) is not None for candidate in candidates):
+            retry = "--pick <n> or --path <file>"
+        else:
+            retry = "--path <file>"
+        return f"'{target}' is ambiguous: {listed} -- retry with {retry}"
+    if outcome == "not_found":
+        suggestions, more = _lookup_items(payload, "suggestions")
+        names = [name for name in map(_format_suggestion, suggestions) if name]
+        if not names:
+            return ""
+        listed = ", ".join(names) + (f" (+{more} more)" if more else "")
+        return f"'{target}' not found in the graph; did you mean: {listed}"
+    return ""
+
+
 def _ix_text_from_stdout(stdout: str | None) -> str | None:
     fragment = extract_json_fragment(stdout or "")
     return fragment or (stdout or "").strip() or None
@@ -738,14 +852,15 @@ def summarize_impact(payload: dict | list | None) -> str:
     return ""
 
 
-def run_parallel_json(
-    calls: list[tuple[str, list[str], int]], cwd: str | Path | None
-) -> dict[str, dict | list | None]:
-    results: dict[str, dict | list | None] = {}
+def run_parallel(
+    calls: list[tuple[str, Callable[..., object], list[str], int]], cwd: str | Path | None
+) -> dict[str, object]:
+    """Each `(name, runner, argv, timeout)` at once; `{name: runner's answer}`."""
+    results: dict[str, object] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(calls) or 1) as executor:
         future_map = {
-            executor.submit(run_ix_json, argv, cwd=cwd, timeout=timeout): name
-            for name, argv, timeout in calls
+            executor.submit(runner, argv, cwd=cwd, timeout=timeout): name
+            for name, runner, argv, timeout in calls
         }
         for future in concurrent.futures.as_completed(future_map):
             results[future_map[future]] = future.result()
@@ -824,16 +939,20 @@ def build_search_message(pattern: str, cwd: str | Path | None) -> str | None:
     if len(pattern) < 3:
         return None
 
-    calls = [("text", ["ix", "text", pattern, "--limit", "15", "--format", "json"], 10)]
+    calls = [("text", run_ix_json, ["ix", "text", pattern, "--limit", "15", "--format", "json"], 10)]
     # Symbol lookup only for plain patterns: a regex is not a symbol name.
     # No `--limit` -- `ix locate` has no such option (it resolves one target and
     # lists the runners-up), and commander rejects the whole call over it.
     if looks_plain_pattern(pattern):
-        calls.append(("locate", ["ix", "locate", pattern, "--format", "json"], 10))
-    results = run_parallel_json(calls, cwd)
+        calls.append(("locate", run_ix_lookup, ["ix", "locate", pattern, "--format", "json"], 10))
+    results = run_parallel(calls, cwd)
 
     text_part = summarize_text_results(results.get("text"))
-    locate_part = summarize_locate_results(results.get("locate"))
+    locate_outcome, locate = results.get("locate") or ("error", None)
+    if locate_outcome == "ok":
+        locate_part = summarize_locate_results(locate)
+    else:
+        locate_part = describe_lookup(locate_outcome, locate, pattern)
     if not text_part and not locate_part:
         return None
 
@@ -863,18 +982,35 @@ def build_read_message(file_path: str, cwd: str | Path | None) -> str | None:
         except ValueError:
             pass
 
-    results = run_parallel_json(
+    results = run_parallel(
         [
-            ("inventory", ["ix", "inventory", "--kind", "file", "--path", filename, "--format", "json"], 10),
-            ("overview", ["ix", "overview", ix_query_target, "--format", "json"], 10),
-            ("impact", ["ix", "impact", ix_query_target, "--format", "json"], 10),
+            ("inventory", run_ix_json, ["ix", "inventory", "--kind", "file", "--path", filename, "--format", "json"], 10),
+            ("overview", run_ix_lookup, ["ix", "overview", ix_query_target, "--format", "json"], 10),
+            ("impact", run_ix_lookup, ["ix", "impact", ix_query_target, "--format", "json"], 10),
         ],
         cwd,
     )
 
-    entity_part = summarize_overview(results.get("overview")) or summarize_inventory(results.get("inventory"))
-    risk_part = summarize_impact(results.get("impact"))
-    if not entity_part and not risk_part:
+    overview_outcome, overview = results.get("overview") or ("error", None)
+    impact_outcome, impact = results.get("impact") or ("error", None)
+    entity_part = summarize_overview(overview if overview_outcome == "ok" else None) or summarize_inventory(
+        results.get("inventory")
+    )
+    risk_part = summarize_impact(impact if impact_outcome == "ok" else None)
+    # Both lookups resolve the same target, so one answer of theirs is enough.
+    # Ambiguity is left out: the model named an exact file, and the target ix
+    # found ambiguous is the hook's own (often just the basename), so "retry
+    # with --path" would be about a command the model never ran.
+    lookup_parts = [
+        part
+        for part in (
+            describe_lookup(outcome, payload, ix_query_target)
+            for outcome, payload in ((overview_outcome, overview), (impact_outcome, impact))
+            if outcome != "ambiguous"
+        )
+        if part
+    ][:1]
+    if not entity_part and not risk_part and not lookup_parts:
         return None
 
     pieces = [f"[ix] {filename}"]
@@ -882,6 +1018,7 @@ def build_read_message(file_path: str, cwd: str | Path | None) -> str | None:
         pieces.append(entity_part)
     if risk_part:
         pieces.append(risk_part)
+    pieces.extend(lookup_parts)
     pieces.append("Use ix read <symbol> to get just a symbol's source")
     return " | ".join(pieces[:1] + pieces[1:])
 
@@ -984,24 +1121,46 @@ def files_written(event: dict) -> list[str]:
 MAX_WRITE_WARNINGS = 3
 
 
-def build_write_warnings(paths: list[str], cwd: str | Path | None) -> str | None:
+def build_write_warnings(
+    paths: list[str], cwd: str | Path | None, session_cwd: str | Path | None = None
+) -> str | None:
     """`build_write_warning` for the first few `paths`, joined; None if all are safe."""
     targets = paths[:MAX_WRITE_WARNINGS]
     if not targets:
         return None
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(targets)) as executor:
-        warnings = list(executor.map(lambda path: build_write_warning(path, cwd), targets))
+        warnings = list(executor.map(lambda path: build_write_warning(path, cwd, session_cwd), targets))
     found = [warning for warning in warnings if warning]
     return "\n".join(found) if found else None
 
 
-def build_write_warning(file_path: str, cwd: str | Path | None) -> str | None:
-    """Run ix impact on a file before a write and return a warning, or None if safe."""
+def _write_target_exists(file_path: str, base: str | Path | None) -> bool:
+    path = Path(file_path)
+    if not path.is_absolute():
+        path = Path(base or os.getcwd()) / path
+    return path.exists()
+
+
+def build_write_warning(
+    file_path: str, cwd: str | Path | None, session_cwd: str | Path | None = None
+) -> str | None:
+    """Run ix impact on a file before a write and return a warning, or None if safe.
+
+    `cwd` is where ix runs (the workspace root); `session_cwd` is where the
+    command runs, which a relative `file_path` is relative to. It defaults to `cwd`.
+    """
     filename = Path(file_path).name
     if not filename:
         return None
 
-    impact = run_ix_json(["ix", "impact", file_path, "--format", "json"], cwd=cwd, timeout=10)
+    outcome, impact = run_ix_lookup(["ix", "impact", file_path, "--format", "json"], cwd=cwd, timeout=10)
+    if outcome == "not_found" and not _write_target_exists(file_path, session_cwd or cwd):
+        # A file this patch creates is not in the graph yet; "did you mean"
+        # would only point the model at a similarly named file.
+        return None
+    if outcome != "ok":
+        note = describe_lookup(outcome, impact, file_path)
+        return f"[ix] {filename}: impact not checked, {note}" if note else None
     if not isinstance(impact, dict):
         return None
 
