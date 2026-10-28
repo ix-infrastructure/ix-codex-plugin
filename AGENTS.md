@@ -26,6 +26,7 @@ This means Codex is not a command wrapper. Codex uses Ix as memory to reason, th
 - Use high-level skills (`ix-investigate`, `ix-understand`) not raw command dumps
 - Stop early once you can answer the question
 - Label evidence and distinguish graph-backed facts from inferences
+- Use `--path` with `ix callers` or `ix callees` to disambiguate symbols by source path
 
 ### Never
 - Scan entire files unless the whole file is the question
@@ -35,7 +36,6 @@ This means Codex is not a command wrapper. Codex uses Ix as memory to reason, th
 - Run `ix map` for exploration
 - Run `ix rank` without both `--by` and `--kind`
 - Run `ix inventory` without `--kind` — `--kind` is required (e.g. `ix inventory --kind file --path <dir> --format llm`)
-- Add `--path` to `ix callers` or `ix callees` — these subcommands do not accept `--path`
 - Add `--limit` to `ix locate` — this subcommand does not accept `--limit`
 
 ---

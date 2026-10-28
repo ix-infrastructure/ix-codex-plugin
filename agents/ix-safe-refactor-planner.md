@@ -87,7 +87,7 @@ Do not probe for Pro separately — run the command this step needs and read the
 Before finalizing the plan, check for existing decisions or plans that constrain this refactor:
 ```bash
 ix decisions --format json
-ix plans --format json
+ix plan list --format json
 ```
 
 - Surface any decisions that apply to the targets — these may restrict how or whether certain changes are safe

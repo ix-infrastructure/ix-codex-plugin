@@ -43,6 +43,7 @@ HOOKS_DIR = REPO / ".codex" / "hooks"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_codex_hook_protocol import load_schema, validate  # noqa: E402
+from test_plugin_guidance import PluginCliContractTest  # noqa: E402, F401
 
 EXPECTED_VERSION = os.environ.get("IX_EXPECTED_VERSION", "0.12.0")
 

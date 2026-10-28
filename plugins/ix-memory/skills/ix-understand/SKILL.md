@@ -1,6 +1,6 @@
 ---
 name: ix-understand
-description: Build a mental model of a system, subsystem, or the whole repo. Graph-first, no code reads unless necessary.
+description: Use when onboarding to a codebase or understanding how a system, subsystem, or repo works. Graph-first, no code reads unless necessary.
 argument-hint: [target — subsystem name, path, or empty for whole repo]
 ---
 
