@@ -193,10 +193,7 @@ class RealIxContract(unittest.TestCase):
         # ...and the lookup hooks read it as "not mapped" but add nothing for it.
         self.assertEqual(("not_mapped", record), common.run_ix_lookup(argv, cwd=self.repo, timeout=30))
         self.assertIsNone(common.build_write_warning("widget.py", self.repo))
-        self.assertNotIn(
-            "not mapped",
-            common.build_read_message(str(self.repo / "widget.py"), self.repo) or "",
-        )
+        self.assertIsNone(common.build_read_message(str(self.repo / "widget.py"), self.repo))
 
     # ── 4. backend down: health fails closed, Pro stub is a definitive "no" ─
 

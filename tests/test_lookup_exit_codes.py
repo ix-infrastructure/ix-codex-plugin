@@ -222,12 +222,26 @@ class ReadPathTest(unittest.TestCase):
         with patch.object(common.subprocess, "run", fake.run):
             return common.build_read_message("src/ui/widget.ts", None)
 
-    def test_exit_2_lists_candidates(self) -> None:
-        message = self.read(inventory=(1, REAL_ERROR), overview=(2, AMBIGUOUS), impact=(2, AMBIGUOUS))
-        self.assertTrue(message.startswith("[ix] widget.ts"), message)
-        self.assertEqual(1, message.count("is ambiguous"), message)
-        self.assertIn("[2] Widget (interface, src/api/types.ts:40)", message)
-        self.assertIn("--pick <n>", message)
+    def test_exit_2_adds_nothing(self) -> None:
+        # The model named an exact file; the target ix found ambiguous is the
+        # hook's own (the basename here), so "retry with --path" is noise.
+        for code in (2, 1):  # 1: an older ix
+            with self.subTest(code=code):
+                self.assertIsNone(
+                    self.read(inventory=(1, REAL_ERROR), overview=(code, AMBIGUOUS), impact=(code, AMBIGUOUS))
+                )
+
+    def test_a_duplicated_basename_is_not_called_ambiguous(self) -> None:
+        common = _load()
+        fake = ScriptedIx(
+            inventory=(1, REAL_ERROR),
+            overview=(2, AMBIGUOUS_NO_PICK),
+            impact=(2, AMBIGUOUS_NO_PICK),
+        )
+        with patch.object(common.subprocess, "run", fake.run):
+            message = common.build_read_message("src/a/utils.py", None)
+        self.assertIn(["overview", "utils.py", "--format", "json"], fake.runs)
+        self.assertIsNone(message)
 
     def test_exit_3_shows_the_suggestions(self) -> None:
         message = self.read(inventory=(1, REAL_ERROR), overview=(3, NOT_FOUND), impact=(3, NOT_FOUND))
@@ -242,8 +256,8 @@ class ReadPathTest(unittest.TestCase):
                 )
 
     def test_an_older_ix_exiting_1_with_the_record(self) -> None:
-        message = self.read(inventory=(1, REAL_ERROR), overview=(1, AMBIGUOUS), impact=(1, AMBIGUOUS))
-        self.assertIn("[1] Widget (class, src/ui/widget.ts:12)", message)
+        message = self.read(inventory=(1, REAL_ERROR), overview=(1, NOT_FOUND), impact=(1, NOT_FOUND))
+        self.assertIn("did you mean: Widget (src/ui/widget.ts), WidgetFactory", message)
 
     def test_real_error_timeout_and_bad_json_behave_as_before(self) -> None:
         self.assertIsNone(self.read(inventory=(1, REAL_ERROR), overview=(1, REAL_ERROR), impact=TimeoutError))
@@ -257,7 +271,16 @@ class ReadPathTest(unittest.TestCase):
         )
         self.assertIn("2 entities: Widget, render", message)
         self.assertIn("HIGH RISK: 7 dependents", message)
-        self.assertIn("[1] Widget (class, src/ui/widget.ts:12)", message)
+        self.assertNotIn("ambiguous", message)
+
+    def test_results_still_win_alongside_a_not_found(self) -> None:
+        message = self.read(
+            inventory=(0, {"summary": {"total": 1}, "results": [{"name": "Widget"}]}),
+            overview=(3, NOT_FOUND),
+            impact=(3, NOT_FOUND),
+        )
+        self.assertIn("1 entities: Widget", message)
+        self.assertEqual(1, message.count("did you mean"), message)
 
 
 class WritePathTest(unittest.TestCase):
@@ -292,6 +315,19 @@ class WritePathTest(unittest.TestCase):
         # and a "did you mean" would point the model at some other file.
         self.assertIsNone(self.warn((3, NOT_FOUND), path="src/ui/new_widget.ts"))
         self.assertIsNone(self.warn((1, NOT_FOUND), path=str(self.root / "new_widget.ts")))
+
+    def test_a_new_file_is_looked_for_where_the_command_runs(self) -> None:
+        # The session runs in src/ui; "widget.ts" there exists, and a
+        # same-named file at the workspace root must not make "new.ts" look old.
+        (self.root / "new.ts").write_text("")
+        common = _load()
+        fake = ScriptedIx(impact=(3, NOT_FOUND))
+        session = self.root / "src" / "ui"
+        with patch.object(common.subprocess, "run", fake.run):
+            self.assertIsNone(common.build_write_warnings(["new.ts"], self.root, session))
+            self.assertIn("did you mean", common.build_write_warnings(["widget.ts"], self.root, session))
+            # Without a session cwd, the workspace root is still the base.
+            self.assertIn("did you mean", common.build_write_warning("new.ts", self.root))
 
     def test_exit_4_adds_nothing(self) -> None:
         common = _load()

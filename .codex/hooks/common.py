@@ -998,11 +998,15 @@ def build_read_message(file_path: str, cwd: str | Path | None) -> str | None:
     )
     risk_part = summarize_impact(impact if impact_outcome == "ok" else None)
     # Both lookups resolve the same target, so one answer of theirs is enough.
+    # Ambiguity is left out: the model named an exact file, and the target ix
+    # found ambiguous is the hook's own (often just the basename), so "retry
+    # with --path" would be about a command the model never ran.
     lookup_parts = [
         part
         for part in (
-            describe_lookup(overview_outcome, overview, ix_query_target),
-            describe_lookup(impact_outcome, impact, ix_query_target),
+            describe_lookup(outcome, payload, ix_query_target)
+            for outcome, payload in ((overview_outcome, overview), (impact_outcome, impact))
+            if outcome != "ambiguous"
         )
         if part
     ][:1]
@@ -1117,32 +1121,40 @@ def files_written(event: dict) -> list[str]:
 MAX_WRITE_WARNINGS = 3
 
 
-def build_write_warnings(paths: list[str], cwd: str | Path | None) -> str | None:
+def build_write_warnings(
+    paths: list[str], cwd: str | Path | None, session_cwd: str | Path | None = None
+) -> str | None:
     """`build_write_warning` for the first few `paths`, joined; None if all are safe."""
     targets = paths[:MAX_WRITE_WARNINGS]
     if not targets:
         return None
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(targets)) as executor:
-        warnings = list(executor.map(lambda path: build_write_warning(path, cwd), targets))
+        warnings = list(executor.map(lambda path: build_write_warning(path, cwd, session_cwd), targets))
     found = [warning for warning in warnings if warning]
     return "\n".join(found) if found else None
 
 
-def _write_target_exists(file_path: str, cwd: str | Path | None) -> bool:
+def _write_target_exists(file_path: str, base: str | Path | None) -> bool:
     path = Path(file_path)
     if not path.is_absolute():
-        path = Path(cwd or os.getcwd()) / path
+        path = Path(base or os.getcwd()) / path
     return path.exists()
 
 
-def build_write_warning(file_path: str, cwd: str | Path | None) -> str | None:
-    """Run ix impact on a file before a write and return a warning, or None if safe."""
+def build_write_warning(
+    file_path: str, cwd: str | Path | None, session_cwd: str | Path | None = None
+) -> str | None:
+    """Run ix impact on a file before a write and return a warning, or None if safe.
+
+    `cwd` is where ix runs (the workspace root); `session_cwd` is where the
+    command runs, which a relative `file_path` is relative to. It defaults to `cwd`.
+    """
     filename = Path(file_path).name
     if not filename:
         return None
 
     outcome, impact = run_ix_lookup(["ix", "impact", file_path, "--format", "json"], cwd=cwd, timeout=10)
-    if outcome == "not_found" and not _write_target_exists(file_path, cwd):
+    if outcome == "not_found" and not _write_target_exists(file_path, session_cwd or cwd):
         # A file this patch creates is not in the graph yet; "did you mean"
         # would only point the model at a similarly named file.
         return None
