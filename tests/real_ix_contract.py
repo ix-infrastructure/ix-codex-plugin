@@ -43,6 +43,15 @@ HOOKS_DIR = REPO / ".codex" / "hooks"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_codex_hook_protocol import load_schema, validate  # noqa: E402
+from test_plugin_guidance import (  # noqa: E402
+    FLAGS,
+    REQUIRED_OPTIONS,
+    Mention,
+    help_options,
+    is_pro_stub_help,
+    plugin_mentions,
+    static_guidance,
+)
 
 EXPECTED_VERSION = os.environ.get("IX_EXPECTED_VERSION", "0.12.0")
 
@@ -310,6 +319,74 @@ class RealIxContract(unittest.TestCase):
         self.assertIsNotNone(payload, f"no interception; stderr: {result.stderr}")
         context = payload["hookSpecificOutput"]["additionalContext"]
         self.assertIn("text hits in widget.py", context)
+
+
+VALID_OPTION_VALUES = {"--by": "dependents", "--kind": "class"}
+
+
+class CliHelpContract(unittest.TestCase):
+    """Documented commands and flags against the released CLI's --help.
+
+    Only --help (and, for REQUIRED_OPTIONS, an argv that commander rejects
+    before any action) is executed: examples and placeholders never become
+    shell commands. On the OSS CLI a Pro command's help is a stub's, so its
+    flags go unchecked there.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.ix = shutil.which("ix")
+        if cls.ix is None:
+            raise unittest.SkipTest("no `ix` on PATH")  # turned into a failure in main()
+
+    def run_ix(self, *argv: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([self.ix, *argv], capture_output=True, text=True, timeout=15, cwd=REPO)
+
+    def test_every_documented_command_and_flag_matches_cli_definitions(self) -> None:
+        grouped: dict[tuple[str, ...], list[Mention]] = {}
+        for item in plugin_mentions():
+            grouped.setdefault(item.command, []).append(item)
+        # Recovery flags are described separately from the locate invocation.
+        grouped.setdefault(("locate",), []).append(Mention(
+            ("locate",), frozenset(FLAGS.findall(static_guidance())), "_STATIC_GUIDANCE recovery"
+        ))
+        self.assertTrue(grouped)
+        for command, examples in sorted(grouped.items()):
+            with self.subTest(command=" ".join(command)):
+                result = self.run_ix(*command, "--help")
+                # Negative command claims (e.g. "there is no ix bugs") have no flags.
+                # The CLI answers an unknown command with its top-level help and
+                # exit 0, so the claim holds when no help declares that command.
+                if all(item.forbidden and not item.flags for item in examples):
+                    self.assertNotRegex(result.stdout + result.stderr,
+                                        r"Usage: ix " + re.escape(" ".join(command)) + r"(?:\s|$)")
+                    continue
+                self.assertEqual(0, result.returncode, result.stderr)
+                if is_pro_stub_help(result.stdout, command):
+                    continue
+                self.assertIn("Usage: ix " + " ".join(command), result.stdout)
+                options = help_options(result.stdout)
+                for item in examples:
+                    with self.subTest(source=item.source, flags=sorted(item.flags)):
+                        if item.forbidden:
+                            self.assertFalse(item.flags & options, item)
+                        else:
+                            self.assertFalse(item.flags - options, item)
+
+    def test_required_options_table_matches_the_cli(self) -> None:
+        # Commander checks mandatory options before the action runs, so no
+        # backend is needed: leaving one out must be rejected by name.
+        for command, required in sorted(REQUIRED_OPTIONS.items()):
+            for missing in sorted(required):
+                with self.subTest(command=" ".join(command), missing=missing):
+                    argv = [*command]
+                    for other in sorted(required - {missing}):
+                        # Documented values: an invalid choice would be
+                        # rejected first, for the wrong reason.
+                        argv += [other, VALID_OPTION_VALUES[other]]
+                    result = self.run_ix(*argv)
+                    self.assertNotEqual(0, result.returncode, result.stdout)
+                    self.assertRegex(result.stderr, r"required option '[^']*" + re.escape(missing) + r"\b")
 
 
 def main() -> int:

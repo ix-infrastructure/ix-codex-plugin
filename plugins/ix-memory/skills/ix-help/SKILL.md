@@ -1,6 +1,6 @@
 ---
 name: ix-help
-description: Route to the right Ix skill or command for your task
+description: Use when choosing the right Ix skill or command for a task.
 argument-hint: <task or question>
 ---
 

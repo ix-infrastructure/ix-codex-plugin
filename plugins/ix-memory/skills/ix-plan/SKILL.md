@@ -1,6 +1,6 @@
 ---
 name: ix-plan
-description: Generate a risk-ordered implementation plan for a set of targets. Assesses blast radius per target, finds data flows between them, and produces a safe change sequence.
+description: Use when planning multi-file changes or refactors. Assess blast radius per target, find data flows between targets, and produce a safe change sequence.
 argument-hint: <symbol1> [symbol2] [symbol3] ... OR description of change
 ---
 
@@ -55,11 +55,11 @@ Identify if any third symbol depends on multiple targets (shared blast radius �
 
 ## Phase 5 — Ix Pro plan (if ix pro available)
 
-Do not probe for Pro separately — run the command this phase needs and read the result. Pro commands are always registered: when @ix/pro is absent the CLI installs a stub that exits 1 with `The 'plans' command requires Ix Pro.`, so that message is the definitive "OSS-only, skip this phase" signal, and it costs nothing beyond the call you were making anyway. Do not probe with `--help` (commander handles it before the stub's action runs, so it succeeds either way and tells you nothing), and do not gate on a field in the JSON — `revision` is present on every Pro briefing and is often `null`.
+Do not probe for Pro separately — run the command this phase needs and read the result. If it reports that it requires Ix Pro, skip this phase. Do not probe with `--help` (commander handles it before the command's action runs, so it tells you nothing about Pro availability), and do not gate on a field in the JSON — `revision` is present on every Pro briefing and is often `null`.
 
 You **must** run:
 ```bash
-ix plans --format json
+ix plan list --format json
 ```
 Use the output to qualify change ordering — existing plans may already cover some targets or establish priority constraints. If active plans are present and this step is skipped, the plan output is incomplete.
 
