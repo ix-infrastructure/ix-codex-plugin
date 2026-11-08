@@ -18,8 +18,9 @@ _STATIC_GUIDANCE = "\n".join([
     "Run `ix callers <symbol>` and `ix impact <symbol>` before editing a symbol.",
     "Ambiguous? Retry with `--pick N`, `--path <path>`, or `--kind <kind>`.",
     "Not found means a new or misspelled symbol: search a partial name, then rg for symbols you just wrote.",
-    "Use $ix-* skills in Codex, never as shell commands. Read symbols with `ix read <symbol>`. "
-    "Stop when answered; label graph facts vs inferences.",
+    "Skills (never shell commands): $ix-understand, $ix-investigate, $ix-impact before edits, "
+    "$ix-debug, $ix-architecture, $ix-docs, $ix-plan.",
+    "Read symbols with `ix read <symbol>`. Stop when answered; label graph facts vs inferences.",
 ])
 
 

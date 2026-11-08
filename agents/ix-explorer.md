@@ -24,7 +24,7 @@ Token efficiency over completeness. The goal is to answer the question, not to e
 | "What does X call?" | `ix callees X` |
 | "How does A reach B?" | `ix trace A --to B` |
 | "What depends on X?" | `ix depends X --depth 2` |
-| "What's in this file?" | `ix overview <file>` -> `ix inventory --path <file>` |
+| "What's in this file?" | `ix overview <file>` -> `ix inventory --kind function --path <file>` |
 | "Find uses of X" | `ix text X --limit 20` + `ix locate X` (parallel) |
 | "What imports X?" | `ix imported-by X` |
 | "Most important components" | `ix rank --by dependents --kind class --top 10` |

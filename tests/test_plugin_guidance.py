@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
 # Copyright 2026 Ix Infrastructure Inc.
 
-"""Guidance contracts, plus flags checked against CLI-generated command help.
+"""Guidance contracts for the plugin's documented `ix` commands.
 
-The text checks run without Ix. The CLI checks also run in real_ix_contract.py,
-whose entry point fails on skips, so the released-CLI CI job enforces them.
-Only --help is executed: examples and placeholders never become shell commands.
-On the OSS CLI a Pro command's help is a stub's, so its flags go unchecked there.
+Everything here is hermetic: no test in this file runs `ix`. The helpers below
+are shared with real_ix_contract.py, whose CliHelpContract checks the same
+mentions against a released CLI's --help in the real-ix CI job.
 """
 
 from __future__ import annotations
 
 import ast
 import re
-import shutil
-import subprocess
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +21,12 @@ SKILLS = REPO / "plugins" / "ix-memory" / "skills"
 FLAGS = re.compile(r"--[a-z][a-z-]*")
 COMMAND = re.compile(r"(?<![\w$-])ix\s+([a-z][a-z-]*)(?:\s+([a-z][a-z-]*))?")
 GROUPS = {"bug", "plan", "mcp", "data"}
+# Options the CLI rejects a command without. real_ix_contract.py proves each
+# entry against the released CLI, so a stale entry fails there.
+REQUIRED_OPTIONS: dict[tuple[str, ...], frozenset[str]] = {
+    ("inventory",): frozenset({"--kind"}),
+    ("rank",): frozenset({"--by", "--kind"}),
+}
 
 
 @dataclass(frozen=True)
@@ -88,6 +91,18 @@ def plugin_mentions() -> list[Mention]:
     return found
 
 
+def missing_required(item: Mention) -> frozenset[str]:
+    """Required options a documented invocation leaves out.
+
+    A bare name (`ix rank`, no flags) refers to the command rather than invoking
+    it, and a negative claim is not an invocation either, so neither is held to
+    the required options.
+    """
+    if item.forbidden or not item.flags:
+        return frozenset()
+    return REQUIRED_OPTIONS.get(item.command, frozenset()) - item.flags
+
+
 def help_options(help_text: str) -> set[str]:
     """Use option declarations, never example text or descriptive prose."""
     section = help_text.split("Options:\n", 1)[-1]
@@ -125,9 +140,17 @@ class PluginGuidanceTest(unittest.TestCase):
         text = static_guidance()
         for trigger in ("ix locate", "ix search", "rg", "grep", "ix callers", "ix impact",
                         "before editing", "--pick", "--path", "--kind", "partial name",
-                        "new or misspelled", "symbols you just wrote"):
+                        "new or misspelled", "symbols you just wrote", "$ix-impact before edits"):
             with self.subTest(trigger=trigger):
                 self.assertIn(trigger, text)
+
+    def test_static_guidance_names_the_workflow_skills(self) -> None:
+        text = static_guidance()
+        for skill in ("ix-understand", "ix-investigate", "ix-impact", "ix-debug",
+                      "ix-architecture", "ix-docs", "ix-plan"):
+            with self.subTest(skill=skill):
+                self.assertTrue((SKILLS / skill / "SKILL.md").is_file())
+                self.assertIn("$" + skill, text)
 
     def test_all_skill_descriptions_start_with_use_when(self) -> None:
         skills = sorted(SKILLS.glob("*/SKILL.md"))
@@ -166,6 +189,23 @@ class PluginGuidanceTest(unittest.TestCase):
         self.assertEqual([("locate",), ("trace",)], [item.command for item in result])
         self.assertEqual(frozenset({"--upstream", "--downstream"}), result[1].flags)
 
+    def test_documented_invocations_supply_required_options(self) -> None:
+        mentioned = plugin_mentions()
+        for command in REQUIRED_OPTIONS:
+            with self.subTest(command=" ".join(command)):
+                self.assertTrue(any(item.command == command and item.flags for item in mentioned))
+        for item in mentioned:
+            with self.subTest(source=item.source, command=" ".join(item.command)):
+                self.assertFalse(missing_required(item), item)
+
+    def test_missing_required_option_detection(self) -> None:
+        bad = mentions("`ix inventory --path <file>`\n```bash\nix rank --by dependents --top 5\n```",
+                       "example.md")
+        self.assertEqual([frozenset({"--kind"})] * 2, [missing_required(item) for item in bad])
+        ok = mentions("`ix rank --by callers --kind function`, see `ix rank`.\n"
+                      "`ix inventory` does not accept `--limit`", "example.md")
+        self.assertEqual([frozenset()] * 3, [missing_required(item) for item in ok])
+
     def test_pro_stub_help_is_told_apart_from_real_help(self) -> None:
         # Verbatim from ix 0.12.0 without @ix/pro: `ix plan list --help`.
         stub = ("Usage: ix plan [options] [args...]\n\nManage plans and plan tasks\n\n"
@@ -178,48 +218,6 @@ class PluginGuidanceTest(unittest.TestCase):
         bare = "Usage: ix stats [options]\n\nOptions:\n  -h, --help  Help\n"
         self.assertFalse(is_pro_stub_help(bare, ("stats",)))
         self.assertFalse(is_pro_stub_help(stub, ("bug", "list")))
-
-
-class PluginCliContractTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.ix = shutil.which("ix")
-        if cls.ix is None:
-            raise unittest.SkipTest("no ix CLI; enforced by the real-CLI CI job")
-
-    def test_every_documented_command_and_flag_matches_cli_definitions(self) -> None:
-        grouped: dict[tuple[str, ...], list[Mention]] = {}
-        for item in plugin_mentions():
-            grouped.setdefault(item.command, []).append(item)
-        # Recovery flags are described separately from the locate invocation.
-        grouped.setdefault(("locate",), []).append(Mention(
-            ("locate",), frozenset(FLAGS.findall(static_guidance())), "_STATIC_GUIDANCE recovery"
-        ))
-        self.assertTrue(grouped)
-        for command, examples in sorted(grouped.items()):
-            with self.subTest(command=" ".join(command)):
-                result = subprocess.run([self.ix, *command, "--help"], capture_output=True,
-                                        text=True, timeout=15, cwd=REPO)
-                if "is not available to agents; allowed:" in result.stderr:
-                    raise unittest.SkipTest("command help denied by environment: " + " ".join(command))
-                # Negative command claims (e.g. "there is no ix bugs") have no flags.
-                # The CLI answers an unknown command with its top-level help and
-                # exit 0, so the claim holds when no help declares that command.
-                if all(item.forbidden and not item.flags for item in examples):
-                    self.assertNotRegex(result.stdout + result.stderr,
-                                        r"Usage: ix " + re.escape(" ".join(command)) + r"(?:\s|$)")
-                    continue
-                self.assertEqual(0, result.returncode, result.stderr)
-                if is_pro_stub_help(result.stdout, command):
-                    continue
-                self.assertIn("Usage: ix " + " ".join(command), result.stdout)
-                options = help_options(result.stdout)
-                for item in examples:
-                    with self.subTest(source=item.source, flags=sorted(item.flags)):
-                        if item.forbidden:
-                            self.assertFalse(item.flags & options, item)
-                        else:
-                            self.assertFalse(item.flags - options, item)
 
 
 if __name__ == "__main__":
