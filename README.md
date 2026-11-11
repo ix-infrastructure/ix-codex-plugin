@@ -133,12 +133,15 @@ They install `main` unless you ask for something else. To pin a tag, branch or f
 pass `--ref` or set `IX_CODEX_REF` (`--ref` wins if both are given):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ix-infrastructure/ix-codex-plugin/main/codex-install.sh | sh -s -- --ref <tag>
+curl -fsSL https://raw.githubusercontent.com/ix-infrastructure/ix-codex-plugin/<tag>/codex-install.sh | sh -s -- --ref <tag>
 ```
 
 ```powershell
-$env:IX_CODEX_REF = "<tag>"; irm https://raw.githubusercontent.com/ix-infrastructure/ix-codex-plugin/main/codex-install.ps1 | iex
+$env:IX_CODEX_REF = "<tag>"; irm https://raw.githubusercontent.com/ix-infrastructure/ix-codex-plugin/<tag>/codex-install.ps1 | iex
 ```
+
+Fetch the installer script from the same tag you pin, so the wrapper and its default arguments
+match the checkout they run.
 
 The installer prints the commit it installed, and the session-start line shows it too. If the
 cached checkout has local changes, it is used as it is and the requested ref is not applied.

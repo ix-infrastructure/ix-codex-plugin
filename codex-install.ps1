@@ -29,7 +29,7 @@ ix-codex-plugin hosted installer
 Usage:
   irm https://raw.githubusercontent.com/ix-infrastructure/ix-codex-plugin/main/codex-install.ps1 | iex
 
-  `$env:IX_CODEX_REF = "<tag>"; irm https://raw.githubusercontent.com/ix-infrastructure/ix-codex-plugin/main/codex-install.ps1 | iex
+  `$env:IX_CODEX_REF = "<tag>"; irm https://raw.githubusercontent.com/ix-infrastructure/ix-codex-plugin/<tag>/codex-install.ps1 | iex
   .\codex-install.ps1 --ref <tag>
 
 Behavior:
