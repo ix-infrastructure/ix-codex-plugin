@@ -80,6 +80,8 @@ WRITE_SKIP_SUFFIXES = (
     ".pdf", ".png", ".tar", ".zip", ".lock", ".sum",
 )
 SEARCH_COMMANDS = {"grep", "rg"}
+# Shorter patterns match too much to be worth an `ix text` query.
+MIN_SEARCH_PATTERN_LENGTH = 3
 READ_COMMANDS = {"cat", "head", "tail", "sed", "awk"}
 REGEX_META_RE = re.compile(r"[\\^$\[\](){}|*+?]")
 SEARCH_VALUE_OPTIONS = {
@@ -936,7 +938,7 @@ def skip_read_path(file_path: str) -> bool:
 
 
 def build_search_message(pattern: str, cwd: str | Path | None) -> str | None:
-    if len(pattern) < 3:
+    if len(pattern) < MIN_SEARCH_PATTERN_LENGTH:
         return None
 
     calls = [("text", run_ix_json, ["ix", "text", pattern, "--limit", "15", "--format", "json"], 10)]
