@@ -96,6 +96,14 @@ else
   printf '%s\n' "$upgrade_out" | sed 's/^/      /'
 fi
 
+# Against a local bare repo standing in for GitHub; no network.
+if hosted_out=$(python3 "$REPO/tests/test_hosted_installer.py" 2>&1); then
+  ok "hosted installers install the requested branch, tag or commit; version fields agree"
+else
+  fail "hosted installer tests failed"
+  printf '%s\n' "$hosted_out" | sed 's/^/      /'
+fi
+
 if argv_out=$(python3 "$REPO/tests/test_ix_argv_resolution.py" 2>&1); then
   ok "ix invocations resolve through PATHEXT and refuse cmd metacharacters"
 else
