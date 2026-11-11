@@ -298,6 +298,72 @@ class HookOutputProtocolTest(unittest.TestCase):
         self.assert_valid("Stop", stdout)
 
 
+class PreToolUseClassifiesFirstTest(unittest.TestCase):
+    """The PreToolUse hook runs on every `Bash` and `apply_patch` call.
+
+    Most shell commands are neither a write, a search nor a read the hook acts
+    on. For those it must return before it starts `git rev-parse` (workspace
+    root) or `ix status` (health) -- a slow backend would otherwise be paid by
+    commands that never use Ix.
+    """
+
+    PASS_THROUGH = (
+        ("Bash", "ls"),
+        ("Bash", "ls -la src"),
+        ("Bash", "npm test"),
+        ("Bash", "git status"),
+        ("Bash", "rg ab src"),  # a pattern too short to search for
+        ("Bash", "cat package-lock.json"),  # a read the hook skips
+        ("Bash", ""),
+        ("apply_patch", "*** Begin Patch\n*** End Patch\n"),
+    )
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+        self.common, self.hook = _load("pre_tool_use", self.tmp / "state")
+
+    def run_hook(self, tool_name: str, command: str):
+        stdout = io.StringIO()
+        event = {
+            "hook_event_name": "PreToolUse",
+            "cwd": str(self.tmp),
+            "tool_name": tool_name,
+            "tool_input": {"command": command},
+        }
+        no_process = AssertionError("the hook started a process")
+        with patch.object(self.common, "ix_available", return_value=True), patch.object(
+            self.common, "run_command"
+        ) as run_command, patch.object(subprocess, "run", side_effect=no_process), patch.object(
+            subprocess, "Popen", side_effect=no_process
+        ), patch.object(
+            sys, "stdin", io.StringIO(json.dumps(event))
+        ), contextlib.redirect_stdout(stdout):
+            self.hook.main()
+        return stdout.getvalue(), run_command
+
+    def test_commands_the_hook_ignores_start_no_process(self) -> None:
+        for tool_name, command in self.PASS_THROUGH:
+            with self.subTest(tool=tool_name, command=command):
+                stdout, run_command = self.run_hook(tool_name, command)
+                self.assertEqual("", stdout)
+                run_command.assert_not_called()
+
+    def test_writes_searches_and_reads_still_resolve_root_and_health(self) -> None:
+        for tool_name, command in (
+            ("Bash", "echo x > src/core.py"),
+            ("Bash", "rg run src"),
+            ("Bash", "cat src/core.py"),
+            ("apply_patch", PATCH),
+        ):
+            with self.subTest(tool=tool_name, command=command):
+                _, run_command = self.run_hook(tool_name, command)
+                argvs = [call.args[0] for call in run_command.call_args_list]
+                self.assertEqual("git", argvs[0][0], argvs)
+                self.assertIn("rev-parse", argvs[0])
+
+
 class ApplyPatchParsingTest(unittest.TestCase):
     def setUp(self) -> None:
         self.common, _ = _load("pre_tool_use", Path(tempfile.gettempdir()))
