@@ -1,5 +1,7 @@
 # Codex Plugin — Change Plan
 
+> **Superseded.** This is the May 2026 change plan derived from the manual test log, kept as history; do not update its change records. Later releases changed the hooks, the installer and the MCP setup. For the plugin as it is now, read [README.md](./README.md), [hooks.md](./hooks.md) and [AGENTS.md](./AGENTS.md).
+
 Derived from: `CODEX_MANUAL_TEST_LOG.md` (baseline date 2026-05-03)
 
 ---

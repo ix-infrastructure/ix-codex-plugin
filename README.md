@@ -81,7 +81,11 @@ For parity with `ix-claude-plugin`, this repo also ships the same playbooks in [
 | `ix-safe-refactor-planner` | Blast radius plus safe change sequencing |
 | `ix-architecture-auditor` | Structural health report with ranked improvements |
 
-These are documentation artifacts today. Codex local plugins do not currently install them as first-class custom agents through `.codex-plugin/plugin.json`.
+These are reference text. No installer mode copies them, and the plugin manifest
+(`plugins/ix-memory/.codex-plugin/plugin.json`) declares only the skills, so installing the plugin
+does not give Codex these as agents. Paste or adapt one as a prompt when you want that workflow; the `$ix-*` skills are
+the supported way in. Their `ix` commands are checked against the CLI in CI, as the skills' are, but
+nothing in this repository keeps them in step with the Claude plugin's copies.
 
 ## Automatic Hooks
 
