@@ -188,6 +188,26 @@ class HostedInstallerCases:
     def test_ref_without_a_value_is_refused(self) -> None:
         self.refused("--ref")
 
+    def test_a_ref_from_the_environment_is_called_out(self) -> None:
+        """A pin left in the environment must not silently override main later.
+
+        `$env:IX_CODEX_REF` set in a PowerShell session (or an exported shell
+        variable) applies to every later run, including one meant to install main.
+        """
+        result = self.run_installer(IX_CODEX_REF="v1.0.0")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        output = result.stdout + result.stderr
+        self.assertIn("IX_CODEX_REF", output)
+        self.assertIn("'v1.0.0'", output)
+
+    def test_no_environment_warning_without_an_environment_pin(self) -> None:
+        for args, env in (((), {}), (("--ref", "v1.0.0"), {}),
+                          (("--ref", "v1.0.0"), {"IX_CODEX_REF": "feature"}),
+                          ((), {"IX_CODEX_REF": "main"})):
+            result = self.run_installer(*args, **env)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            self.assertNotIn("IX_CODEX_REF is set", result.stdout + result.stderr, (args, env))
+
 
 @unittest.skipIf(os.name == "nt", "codex-install.sh is the POSIX installer")
 @unittest.skipUnless(shutil.which("sh") and shutil.which("git"), "needs sh and git")
@@ -245,6 +265,16 @@ class PinnedInstallDocs(unittest.TestCase):
                     checked += 1
                     self.assertIn("/ix-codex-plugin/<tag>/", line, f"{name}: {line.strip()}")
         self.assertGreaterEqual(checked, 4)
+
+    def test_powershell_pin_examples_clear_the_variable_again(self) -> None:
+        """`$env:` assignments outlive the command; the example must undo it."""
+        checked = 0
+        for path in (REPO / "README.md", PS_INSTALLER):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if "IX_CODEX_REF =" in line and "irm " in line:
+                    checked += 1
+                    self.assertIn("finally { Remove-Item Env:IX_CODEX_REF }", line, f"{path.name}: {line.strip()}")
+        self.assertGreaterEqual(checked, 2)
 
 
 if __name__ == "__main__":

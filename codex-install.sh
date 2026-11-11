@@ -7,6 +7,10 @@ GITHUB_ORG="ix-infrastructure"
 GITHUB_REPO="ix-codex-plugin"
 REPO_URL="https://github.com/${GITHUB_ORG}/${GITHUB_REPO}.git"
 REF="${IX_CODEX_REF:-main}"
+REF_FROM_ENV=0
+if [ -n "${IX_CODEX_REF:-}" ]; then
+  REF_FROM_ENV=1
+fi
 IX_HOME="${IX_HOME:-$HOME/.ix}"
 SOURCE_DIR="${IX_HOME}/codex-plugin-source"
 
@@ -115,6 +119,7 @@ for arg do
   shift
   if [ "$expect_ref" -eq 1 ]; then
     REF="$arg"
+    REF_FROM_ENV=0
     expect_ref=0
     continue
   fi
@@ -125,6 +130,7 @@ for arg do
       ;;
     --ref=*)
       REF="${arg#--ref=}"
+      REF_FROM_ENV=0
       continue
       ;;
   esac
@@ -140,6 +146,11 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
 fi
 
 check_ref
+# A variable exported earlier in the shell keeps pinning every later run, so say
+# where a non-default ref came from and how to go back to main.
+if [ "$REF_FROM_ENV" -eq 1 ] && [ "$REF" != "main" ]; then
+  warn "Installing '$REF' because IX_CODEX_REF is set in the environment; unset IX_CODEX_REF to install main."
+fi
 require_cmd git
 PYTHON_BIN="$(find_python)"
 sync_repo

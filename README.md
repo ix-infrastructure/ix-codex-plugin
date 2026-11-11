@@ -137,8 +137,11 @@ curl -fsSL https://raw.githubusercontent.com/ix-infrastructure/ix-codex-plugin/<
 ```
 
 ```powershell
-$env:IX_CODEX_REF = "<tag>"; irm https://raw.githubusercontent.com/ix-infrastructure/ix-codex-plugin/<tag>/codex-install.ps1 | iex
+$env:IX_CODEX_REF = "<tag>"; try { irm https://raw.githubusercontent.com/ix-infrastructure/ix-codex-plugin/<tag>/codex-install.ps1 | iex } finally { Remove-Item Env:IX_CODEX_REF }
 ```
+
+The `finally` clears `IX_CODEX_REF` again; left set, it would pin every later install in the same
+PowerShell session. When `IX_CODEX_REF` pins anything other than `main`, the installer says so.
 
 Fetch the installer script from the same tag you pin, so the wrapper and its default arguments
 match the checkout they run.

@@ -29,7 +29,7 @@ ix-codex-plugin hosted installer
 Usage:
   irm https://raw.githubusercontent.com/ix-infrastructure/ix-codex-plugin/main/codex-install.ps1 | iex
 
-  `$env:IX_CODEX_REF = "<tag>"; irm https://raw.githubusercontent.com/ix-infrastructure/ix-codex-plugin/<tag>/codex-install.ps1 | iex
+  `$env:IX_CODEX_REF = "<tag>"; try { irm https://raw.githubusercontent.com/ix-infrastructure/ix-codex-plugin/<tag>/codex-install.ps1 | iex } finally { Remove-Item Env:IX_CODEX_REF }
   .\codex-install.ps1 --ref <tag>
 
 Behavior:
@@ -241,7 +241,11 @@ function Ensure-Defaults([string[]]$args) {
 
 $parsedArgs = Split-RefArgument $InstallerArgs
 $forwardArgs = $parsedArgs.Rest
-if ($null -ne $parsedArgs.Ref) { $Ref = $parsedArgs.Ref }
+$refFromEnv = -not [string]::IsNullOrEmpty($env:IX_CODEX_REF)
+if ($null -ne $parsedArgs.Ref) {
+    $Ref = $parsedArgs.Ref
+    $refFromEnv = $false
+}
 
 if ($forwardArgs.Count -gt 0 -and ($forwardArgs[0] -eq "--help" -or $forwardArgs[0] -eq "-h")) {
     Show-HostedHelp
@@ -249,6 +253,11 @@ if ($forwardArgs.Count -gt 0 -and ($forwardArgs[0] -eq "--help" -or $forwardArgs
 }
 
 Assert-Ref $Ref
+# $env:IX_CODEX_REF lives for the whole session, so a later plain `irm | iex`
+# meant to install main would quietly reinstall the pinned ref. Say so.
+if ($refFromEnv -and $Ref -cne "main") {
+    Write-Warn "Installing '$Ref' because IX_CODEX_REF is set in this session; run 'Remove-Item Env:IX_CODEX_REF' to install main."
+}
 Require-Command git
 $pythonCmd = Get-PythonCommand
 Sync-Repo
