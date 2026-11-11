@@ -1,5 +1,7 @@
 # ix-codex-plugin Roadmap
 
+> **Superseded.** This is the May 2026 task roadmap for the plugin overhaul, kept as history; do not update its task fields. Since it was written: the MCP tools come from the Ix CLI's own server (`ix mcp`), and the Python MCP server that 2.4.1 and earlier shipped was removed; the hooks call the `ix` CLI, and the `/v2` HTTP client was dropped; the pre-edit warning and the post-edit refresh were built on `apply_patch` and a guarded background map; the playbooks in `agents/` stay reference text that no installer mode copies. For the plugin as it is now, read [README.md](./README.md), [hooks.md](./hooks.md) and [AGENTS.md](./AGENTS.md).
+
 ## Task Tracking Rule
 
 Any AI agent or human working on this roadmap must update task fields directly inside this file.

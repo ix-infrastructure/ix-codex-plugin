@@ -1,7 +1,9 @@
 # ix-codex-plugin — Plugin Specification
 
+> **Superseded.** This is the May 2026 draft plan for the plugin overhaul, kept as history. It does not describe the current plugin. Since it was written: the MCP tools come from the Ix CLI's own server (`ix mcp`), and the Python MCP server that 2.4.1 and earlier shipped was removed; the hooks call the `ix` CLI, and the `/v2` HTTP client was dropped; the pre-edit warning and the post-edit refresh were built on `apply_patch` and a guarded background map; the playbooks in `agents/` stay reference text that no installer mode copies. For the plugin as it is now, read [README.md](./README.md), [hooks.md](./hooks.md) and [AGENTS.md](./AGENTS.md).
+
 Version: 2.0.0-draft  
-Root spec: [IX_PLUGIN_OVERHAUL_SPEC.md](../IX_PLUGIN_OVERHAUL_SPEC.md)  
+Root spec: a cross-plugin overhaul spec kept outside this repository  
 Status: **Overhaul target — v1.0.0 production.** Refactor to match ix-claude-plugin behavior semantics. Pre-edit gate and post-edit ingest are the top-priority parity gaps.
 
 ---
@@ -262,7 +264,7 @@ ix-codex-plugin/
 
 ## 11. Shared Ix Core Runtime requirements
 
-See [IX_PLUGIN_OVERHAUL_SPEC.md](../IX_PLUGIN_OVERHAUL_SPEC.md). Plugin-specific notes:
+See the cross-plugin overhaul spec (outside this repository). Plugin-specific notes:
 
 - `caller.surface = "codex-plugin"` in all API calls.
 - Python HTTP client must be added to `common.py`; must handle `IX_UPSTREAM_UNAVAILABLE` gracefully (bail silently).

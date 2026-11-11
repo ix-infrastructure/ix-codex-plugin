@@ -1,5 +1,7 @@
 # Codex Manual Test Log
 
+> **Superseded.** This is the May 2026 manual test log, kept as history. Its results predate later changes to the hooks, the installer and the MCP setup, and do not describe the current plugin. For the plugin as it is now, read [README.md](./README.md), [hooks.md](./hooks.md) and [AGENTS.md](./AGENTS.md).
+
 Date: 2026-05-03
 Repo: `/home/ianhock/ix/ix-codex-plugin`
 Purpose: Track live Codex skill/hook validation, observed regressions, and likely fixes.

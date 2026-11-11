@@ -33,15 +33,19 @@ Codex 0.155 loads hooks bundled in an installed plugin: `hooks/hooks.json` under
 4. Retire `--hooks`, or keep it only for Codex versions that predate plugin hooks, and have it stop writing `~/.codex/hooks.json` so the two sources do not both fire.
 5. Hook enablement then follows the plugin's enable and disable lifecycle, and a plugin update that changes the hook definitions prompts for review again.
 
-## MCP Availability (Verified)
+## MCP Tools
 
-`codex mcp` subcommand is present in Codex CLI 0.125.0 — MCP server management is available.  
-MCP server implementation for this plugin is deferred (Phase 3 task) pending design of the Python MCP server.
+The MCP tools come from the Ix CLI's own server, `ix mcp`. The plugin ships no MCP server code and installs no MCP file.
 
-## Agent Delegation
+`ix mcp install --host codex` registers `ix mcp` with Codex as the `ix-memory` server (`codex mcp add` writes it to `~/.codex/config.toml`, or `$CODEX_HOME/config.toml` when that is set).
 
-Codex agent delegation status is **not yet verified** as first-class runtime. The five agent playbooks
-in `agents/` remain documentation-only until confirmed.
+The installer's `--mcp` step runs that command with a time limit and reports the outcome in one line: registered, already registered, a different `ix-memory` server left alone (`--force` replaces it), or no `codex` on PATH.
+
+Versions up to 2.4.1 copied a Python server to `.codex/mcp/server.py`. An upgrade replaces that registration with `ix mcp` and removes the old files.
+
+## Agent Playbooks
+
+The five playbooks in `agents/` are reference text, kept for parity with `ix-claude-plugin`. No installer mode copies them, and the plugin manifest (`plugins/ix-memory/.codex-plugin/plugin.json`) does not declare them, so installing the plugin does not give Codex these as agents. Use them as prompts to paste or adapt. The skills (`$ix-*`) are the supported workflows.
 
 ## What The PreToolUse Hook Does
 
@@ -86,8 +90,8 @@ Hook caches and debounce stamps live in `${XDG_STATE_HOME:-~/.local/state}/ix-co
 | Edit-specific PreToolUse matcher | `Edit`, `Write`, `MultiEdit` events | `apply_patch` (+ Bash redirect parse) | Codex edits files with `apply_patch`; files come from the patch headers |
 | Grep/Glob tool interception | Dedicated `Grep`/`Glob` matchers | Bash command parse only | Same limitation as write detection |
 | `file_path` in PreToolUse event | Direct from `tool_input.file_path` | Parsed from the patch, or from the Bash command string | Bash parsing is less reliable for complex pipelines |
-| First-class agent delegation | Yes | Unknown — docs-only | Pending Codex agent runtime verification |
-| MCP tools | Via hooks settings | Available (`codex mcp`) | Python MCP server not yet implemented |
+| First-class agent delegation | Yes | Not installed | `agents/*.md` are reference text; the `$ix-*` skills cover the workflows |
+| MCP tools | Via hooks settings | From `ix mcp` | Registered by the installer's MCP step |
 
 ## Safety Model
 
