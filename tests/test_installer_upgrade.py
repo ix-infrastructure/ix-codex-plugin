@@ -239,7 +239,7 @@ class InstallerHarness(unittest.TestCase):
         else:
             text = old_hooks_json(launcher)
         (self.codex / "hooks.json").write_text(text, encoding="utf-8")
-        for source in (REPO / ".codex" / "hooks").glob("*.py"):
+        for source in (REPO / "plugins" / "ix-memory" / "hooks").glob("*.py"):
             (hooks / source.name).write_text(f"# ix-memory {version} copy of {source.name}\n")
         (self.codex / "ix-plugin-version.json").write_text(
             json.dumps({"plugin_name": "ix-memory", "plugin_version": version,
@@ -280,7 +280,7 @@ class InstallerHarness(unittest.TestCase):
 
     def assert_current_install(self, synthesized: bool = True) -> None:
         hooks = self.codex / "hooks"
-        for source in (REPO / ".codex" / "hooks").glob("*.py"):
+        for source in (REPO / "plugins" / "ix-memory" / "hooks").glob("*.py"):
             self.assertEqual(source.read_bytes(), (hooks / source.name).read_bytes(), source.name)
         plugin = self.codex / "plugins" / "ix-memory"
         self.assertEqual(
@@ -299,7 +299,7 @@ class InstallerHarness(unittest.TestCase):
         self.assertEqual(PLUGIN_VERSION, manifest["plugin_version"])
         # Every module the hooks are made of, not only the five entry points:
         # common.py loads the ix_*.py beside it, so one left out breaks them all.
-        for source in sorted((REPO / ".codex" / "hooks").glob("*.py")):
+        for source in sorted((REPO / "plugins" / "ix-memory" / "hooks").glob("*.py")):
             self.assertIn(f".codex/hooks/{source.name}", manifest["files"])
             self.assertTrue((self.codex / "hooks" / source.name).is_file(), source.name)
         market = json.loads((self.home / ".agents" / "plugins" / "marketplace.json").read_text())

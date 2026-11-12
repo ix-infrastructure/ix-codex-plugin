@@ -77,7 +77,7 @@ def plugin_mentions() -> list[Mention]:
     found = []
     for path in paths:
         found.extend(mentions(path.read_text(encoding="utf-8"), str(path.relative_to(REPO))))
-    for path in sorted((REPO / ".codex" / "hooks").glob("*.py")):
+    for path in sorted((REPO / "plugins" / "ix-memory" / "hooks").glob("*.py")):
         source = str(path.relative_to(REPO))
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
@@ -123,7 +123,7 @@ def is_pro_stub_help(help_text: str, command: tuple[str, ...]) -> bool:
 
 
 def static_guidance() -> str:
-    tree = ast.parse((REPO / ".codex" / "hooks" / "session_start.py").read_text(encoding="utf-8"))
+    tree = ast.parse((REPO / "plugins" / "ix-memory" / "hooks" / "session_start.py").read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
             isinstance(target, ast.Name) and target.id == "_STATIC_GUIDANCE" for target in node.targets

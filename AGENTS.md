@@ -157,6 +157,16 @@ Because of that, the Codex port matches the Claude behavior as closely as the Co
 ```text
 plugins/ix-memory/
   .codex-plugin/plugin.json     - plugin manifest
+  hooks/
+    hooks.json                  - hook event mapping Codex runs from the plugin ($PLUGIN_ROOT)
+    common.py                   - what the hooks import; loads and re-exports the ix_*.py helpers
+    ix_*.py                     - shared helpers, one module per concern (state, process, lookup, parsing, auto-map, once-per-event)
+    session_start.py            - startup guidance
+    user_prompt_submit.py       - Ix Pro briefing injection
+    pre_tool_use.py             - Bash search/read interception, pre-edit impact warning
+    post_tool_use.py            - post-edit background refresh
+    stop.py                     - background graph refresh
+    _launch.py                  - Windows launcher for the --hooks install
   skills/
     ix-understand/SKILL.md      - mental model
     ix-investigate/SKILL.md     - symbol deep dive
@@ -167,15 +177,7 @@ plugins/ix-memory/
     ix-docs/SKILL.md            - narrative-first docs
 
 .codex/
-  hooks.json                    - hook event mapping
-  hooks/
-    common.py                   - what the hooks import; loads and re-exports the ix_*.py helpers
-    ix_*.py                     - shared helpers, one module per concern (state, process, lookup, parsing, auto-map)
-    session_start.py            - startup guidance
-    user_prompt_submit.py       - Ix Pro briefing injection
-    pre_tool_use.py             - Bash search/read interception, pre-edit impact warning
-    post_tool_use.py            - post-edit background refresh
-    stop.py                     - background graph refresh
+  hooks.json                    - the same mapping for `--hooks` (Codex without plugin hooks); runs .codex/hooks/*.py
 
 agents/
   ix-explorer.md

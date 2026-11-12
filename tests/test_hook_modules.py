@@ -27,7 +27,7 @@ import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-HOOKS_DIR = REPO / ".codex" / "hooks"
+HOOKS_DIR = REPO / "plugins" / "ix-memory" / "hooks"
 
 # About 300 lines per module is the bar the split was made against; a module
 # past it is a sign two concerns have grown back together.

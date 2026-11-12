@@ -156,6 +156,12 @@ def source_plugin_dir() -> Path:
     return repo_root() / "plugins" / PLUGIN_NAME
 
 
+def source_hooks_dir() -> Path:
+    """The hook scripts. They ship inside the plugin, which runs them itself on a
+    Codex with plugin hooks; `--hooks` copies the same files into `.codex/hooks/`."""
+    return source_plugin_dir() / "hooks"
+
+
 def target_root_from_args(args: argparse.Namespace) -> Path:
     if args.home:
         return Path.home().resolve()
@@ -299,8 +305,8 @@ class Transaction:
         """
         desired: dict[str, object] = {}
         for source in sorted(source_dir.rglob("*")):
-            if source.is_dir():
-                continue
+            if source.is_dir() or "__pycache__" in source.parts or source.suffix == ".pyc":
+                continue  # bytecode a test run or a hook left in the checkout
             relative = source.relative_to(source_dir).as_posix()
             desired[relative] = source if mode == "symlink" else source.read_bytes()
         if self._tree_matches(dest, desired):
@@ -929,7 +935,7 @@ def _hooks_shape_ok(payload: object) -> bool:
 def plan_hooks(tx: Transaction, target_root: Path, mode: str, force: bool) -> list[Path]:
     paths: list[Path] = []
     codex_dir = target_root / ".codex"
-    hooks_source = source_codex_dir() / "hooks"
+    hooks_source = source_hooks_dir()
     hooks_destination = codex_dir / "hooks"
 
     hooks_json = codex_dir / "hooks.json"
@@ -1001,6 +1007,94 @@ def install_hooks(target_root: Path, mode: str, force: bool) -> list[Path]:
     tx = Transaction()
     paths = plan_hooks(tx, target_root, mode, force)
     tx.commit()
+    return paths
+
+
+# --------------------------------------------------------------------------
+# Plugin-bundled hooks
+# --------------------------------------------------------------------------
+
+# The plugin ships `hooks/hooks.json`, which Codex runs from its installed copy of
+# the plugin with $PLUGIN_ROOT set. The 0.155.1 source review in hooks.md found
+# plugin hooks loaded there; 0.162.1 was checked by running them (`hooks/list`
+# reports them with `"source": "plugin"`, and a turn runs all five).
+MIN_CODEX_FOR_PLUGIN_HOOKS = (0, 155, 0)
+
+
+def _codex_version() -> tuple[int, ...] | None:
+    executable = shutil.which("codex", path=os.environ.get("PATH"))
+    if executable is None or not os.path.isabs(executable):
+        return None
+    try:
+        out = subprocess.run(
+            [executable, "--version"], capture_output=True, text=True, timeout=30
+        ).stdout
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", out or "")
+    return tuple(int(g) for g in match.groups()) if match else None
+
+
+def plugin_hooks_active(codex_home: Path) -> str | None:
+    """Why Codex already runs the hooks bundled in the plugin, or None if it may not.
+
+    All three must hold: a Codex that loads plugin hooks, ix-memory enabled in its
+    config.toml (`[plugins."ix-memory@<marketplace>"] enabled = true`, which
+    installing it in Codex writes), and Codex's installed copy of the plugin
+    (`plugins/cache/<marketplace>/ix-memory/<version>/`) carrying `hooks/hooks.json`.
+    Codex refreshes that copy only when the plugin is installed again, so the copy
+    is what counts, not the files this installer just wrote. Anything unreadable
+    answers None: keeping the hooks.json entries is the safe side, and the hooks
+    drop a second delivery of the same event themselves (ix_once.py).
+    """
+    version = _codex_version()
+    if version is None or version < MIN_CODEX_FOR_PLUGIN_HOOKS:
+        return None
+    config = _load_toml(codex_home / "config.toml")
+    plugins = config.get("plugins") if config else None
+    if not isinstance(plugins, dict):
+        return None
+    for key, entry in plugins.items():
+        name, _, marketplace = str(key).partition("@")
+        if name != PLUGIN_NAME or not marketplace or "/" in marketplace or "\\" in marketplace:
+            continue
+        if not (isinstance(entry, dict) and entry.get("enabled") is True):
+            continue
+        cache = codex_home / "plugins" / "cache" / marketplace / PLUGIN_NAME
+        if any(cache.glob("*/hooks/hooks.json")):
+            shown = ".".join(str(part) for part in version)
+            return f"Codex {shown} runs the hooks bundled in {key}"
+    return None
+
+
+def plan_retire_hooks(tx: Transaction, target_root: Path) -> list[Path]:
+    """Take the plugin's entries out of `.codex/hooks.json` and its scripts out of
+    `.codex/hooks/`, so the hooks.json copy and the bundled copy do not both fire.
+
+    Every other hook in the file is kept where it is. A hooks.json this cannot
+    read is left alone: the plugin's entries cannot be told apart in it.
+    """
+    paths: list[Path] = []
+    hooks_json = target_root / ".codex" / "hooks.json"
+    if _lexists(hooks_json):
+        try:
+            existing = json.loads(hooks_json.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            existing = None
+        if _hooks_shape_ok(existing):
+            kept = merge_hooks(existing, {"hooks": {}})
+            if kept == {"hooks": {}}:
+                tx.remove(hooks_json)
+            elif kept != existing or hooks_json.is_symlink():
+                tx.write(hooks_json, _json_bytes(kept))
+        paths.append(hooks_json)
+
+    previous = _installed_manifest(target_root).get("files")
+    owned = previous if isinstance(previous, list) else list(LEGACY_HOOK_FILES)
+    for relative in owned:
+        if isinstance(relative, str) and re.fullmatch(r"\.codex/hooks/[A-Za-z0-9_]+\.py", relative):
+            tx.remove(target_root / relative)
+    paths.append(plan_version_file(tx, target_root, []))
     return paths
 
 
@@ -1134,7 +1228,7 @@ def _ix_executable() -> str | None:
     where npm ships no `ix.exe` — only `ix.CMD` — and CreateProcess consults no
     PATHEXT, so `subprocess.run(["ix", ...])` raises FileNotFoundError however
     well-formed the rest of the argv is. `shutil.which` DOES apply PATHEXT, so it
-    finds the shim. This is Ix#383's inner half, which `.codex/hooks/common.py`
+    finds the shim. This is Ix#383's inner half, which the hooks' `ix_proc.py`
     already fixes for the hooks; every new `ix` call site has to do the same.
     """
     executable = shutil.which("ix", path=os.environ.get("PATH"))
@@ -1287,6 +1381,9 @@ def main(argv: list[str] | None = None) -> int:
     tx = Transaction()
     installed: list[Path] = []
     hooks_json = target_root / ".codex" / "hooks.json"
+    # Only for --home: a repo's .codex/hooks.json is shared with teammates whose
+    # Codex this machine knows nothing about.
+    bundled = plugin_hooks_active(codex_config_path().parent) if args.hooks and args.home else None
     try:
         if args.plugin:
             installed.extend(
@@ -1300,7 +1397,9 @@ def main(argv: list[str] | None = None) -> int:
                     args.marketplace_display_name,
                 )
             )
-        if args.hooks:
+        if bundled is not None:
+            installed.extend(plan_retire_hooks(tx, target_root))
+        elif args.hooks:
             installed.extend(plan_hooks(tx, target_root, args.mode, args.force))
         hooks_changed = tx.changes(hooks_json)
         changed = tx.commit()
@@ -1324,15 +1423,21 @@ def main(argv: list[str] | None = None) -> int:
         print("Restart Codex, then install or enable 'ix-memory' from the marketplace.")
         print("After that, type '$ix-tutorial' manually in chat.")
         print("Local Codex plugins do not reliably expose skill autocomplete or slash popups.")
-    if args.hooks:
+    if bundled is not None:
+        print(f"Hooks: {bundled}, so the Ix entries in {hooks_json} are not needed.")
         if hooks_changed:
+            kept = " Your other hooks there were kept." if _lexists(hooks_json) else ""
+            print(f"They were removed; restart Codex.{kept}")
+        print("Codex asks you to review and trust the plugin's hooks before it runs them.")
+    if args.hooks:
+        if bundled is None and hooks_changed:
             print("Restart Codex so it reloads hooks.json.")
             # Codex runs a non-managed hook only once its exact definition has
             # been reviewed and trusted, and re-asks whenever that definition
             # changes (codex-rs/hooks/src/engine/discovery.rs, hook_trust_status).
             print("Codex will ask you to review and trust the Ix hooks on its next start;")
             print("until you do, it skips them. `codex exec` cannot ask, so it skips them too.")
-        else:
+        elif bundled is None:
             print("hooks.json is unchanged, so hooks you already trusted stay trusted.")
         config_toml = target_root / ".codex" / "config.toml"
         disabled = hooks_disabled_by(config_toml)

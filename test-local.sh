@@ -22,6 +22,7 @@ echo "-- Checking structure --"
 [ -f "$REPO/plugins/ix-memory/.codex-plugin/plugin.json" ] && ok "plugin manifest found" || fail "missing plugin.json"
 [ -f "$REPO/.agents/plugins/marketplace.json" ] && ok "marketplace found" || fail "missing marketplace.json"
 [ -f "$REPO/.codex/hooks.json" ] && ok "hooks.json found" || fail "missing hooks.json"
+[ -f "$REPO/plugins/ix-memory/hooks/hooks.json" ] && ok "plugin hooks.json found" || fail "missing plugins/ix-memory/hooks/hooks.json"
 [ -f "$REPO/AGENTS.md" ] && ok "AGENTS.md found" || fail "missing AGENTS.md"
 [ -f "$REPO/hooks.md" ] && ok "hooks.md found" || fail "missing hooks.md"
 
@@ -52,8 +53,10 @@ python3 -c 'import json, pathlib; json.load(open(pathlib.Path("'"$REPO"'") / ".a
   && ok "marketplace.json parses" || fail "marketplace.json invalid"
 python3 -c 'import json, pathlib; json.load(open(pathlib.Path("'"$REPO"'") / ".codex/hooks.json")); print("ok")' >/dev/null \
   && ok "hooks.json parses" || fail "hooks.json invalid"
+python3 -c 'import json, pathlib; json.load(open(pathlib.Path("'"$REPO"'") / "plugins/ix-memory/hooks/hooks.json")); print("ok")' >/dev/null \
+  && ok "plugin hooks.json parses" || fail "plugin hooks.json invalid"
 python3 -m py_compile \
-  "$REPO"/.codex/hooks/*.py \
+  "$REPO"/plugins/ix-memory/hooks/*.py \
   "$REPO/scripts/install_codex_integration.py" >/dev/null \
   && ok "Python files compile" || fail "Python compile failed"
 
@@ -100,16 +103,17 @@ fi
 echo ""
 echo "-- hooks.json event coverage --"
 
-python3 - "$REPO/.codex/hooks.json" << 'PYEOF'
+python3 - "$REPO/.codex/hooks.json" "$REPO/plugins/ix-memory/hooks/hooks.json" << 'PYEOF'
 import json, sys
-data = json.load(open(sys.argv[1]))
-hooks = data.get("hooks", {})
-for event in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]:
-    if event in hooks:
-        print(f"  [ok] {event} registered")
-    else:
-        print(f"  [FAIL] {event} missing from hooks.json")
-        sys.exit(1)
+for path in sys.argv[1:]:
+    hooks = json.load(open(path)).get("hooks", {})
+    for event in ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]:
+        if event in hooks:
+            where = "plugin hooks/hooks.json" if "/plugins/" in path else ".codex/hooks.json"
+            print(f"  [ok] {event} registered in {where}")
+        else:
+            print(f"  [FAIL] {event} missing from {path}")
+            sys.exit(1)
 PYEOF
 
 echo ""
@@ -143,7 +147,7 @@ FAKEEOF
 chmod +x "$DRY/bin/ix"
 export IX_FAKE_LOG="$DRY/ix.log"
 : > "$IX_FAKE_LOG"
-dry() { PATH="$DRY/bin:$PATH" XDG_STATE_HOME="$DRY/state" python3 "$REPO/.codex/hooks/$1.py"; }
+dry() { PATH="$DRY/bin:$PATH" XDG_STATE_HOME="$DRY/state" python3 "$REPO/plugins/ix-memory/hooks/$1.py"; }
 
 SESSION_OUT="$(printf '{"cwd":"%s"}' "$REPO" | dry session_start 2>/dev/null || true)"
 [ -n "$SESSION_OUT" ] && ok "session_start emits guidance" || fail "session_start produced no output"
@@ -223,12 +227,12 @@ echo "-- detect_file_write unit tests --"
 
 python3 - << 'PYEOF'
 import sys
-sys.path.insert(0, "REPO_PLACEHOLDER/.codex/hooks")
+sys.path.insert(0, "REPO_PLACEHOLDER/plugins/ix-memory/hooks")
 PYEOF
 
 python3 -c "
 import sys
-sys.path.insert(0, '$REPO/.codex/hooks')
+sys.path.insert(0, '$REPO/plugins/ix-memory/hooks')
 from common import detect_file_write
 
 cases = [

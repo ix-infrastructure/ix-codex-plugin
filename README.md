@@ -108,7 +108,9 @@ All hook text meant for the model is returned as `hookSpecificOutput.additionalC
 
 ### Hook trust
 
-Codex (0.155) runs a hook from `hooks.json` only after you have reviewed and trusted its exact definition. After installing or updating the hooks, start Codex interactively and accept the "Hooks need review" prompt; until then the Ix hooks are skipped. `codex exec` cannot ask, so it skips untrusted hooks.
+The hooks ship inside the plugin, in `plugins/ix-memory/hooks/hooks.json`. Codex 0.155 and later runs them from its installed copy of `ix-memory` once the plugin is enabled, with `$PLUGIN_ROOT` pointing at that copy; no `hooks.json` of your own is needed. `--hooks` is the fallback for a Codex that does not run plugin hooks: it writes the same hooks into `.codex/hooks.json` and copies the scripts to `.codex/hooks/`. A `--home` install checks first: when `codex --version` is 0.155 or later, `ix-memory` is enabled in `~/.codex/config.toml` and Codex's installed copy of the plugin carries `hooks/hooks.json`, it removes its own entries from `~/.codex/hooks.json` (and its scripts) instead, keeping every other hook there. Until then both copies may be registered; the hooks notice that Codex handed them the same event twice and run it once.
+
+Codex (0.155) runs a hook from `hooks.json`, or from a plugin, only after you have reviewed and trusted its exact definition. After installing or updating the hooks, start Codex interactively and accept the "Hooks need review" prompt; until then the Ix hooks are skipped. `codex exec` cannot ask, so it skips untrusted hooks.
 
 Hooks are a stable, default-on Codex feature (`[features] hooks`) since Codex 0.124, so the installer no longer writes the old `codex_hooks = true` flag. That key is now a deprecated alias; you can delete it from your `config.toml`. On Codex older than 0.124, set `codex_hooks = true` under `[features]` yourself.
 - write post-hooks in the current Codex hook bundle
@@ -159,18 +161,16 @@ cd ix-codex-plugin
 Plugin:
 - `plugins/ix-memory/.codex-plugin/plugin.json`
 - `plugins/ix-memory/skills/*`
+- `plugins/ix-memory/hooks/hooks.json` and the hook scripts beside it (run by Codex 0.155+ from the enabled plugin)
 - `.agents/plugins/marketplace.json`
 
 The plugin install step registers a marketplace entry. It does not auto-enable `ix-memory`; restart Codex and enable the plugin before expecting its skills to show up.
 
-Hooks:
+Hooks (`--hooks`, for a Codex that does not run plugin hooks; skipped on `--home` once it does):
 - `.codex/hooks.json`
-- `.codex/hooks/common.py` and the `.codex/hooks/ix_*.py` helper modules it loads
-- `.codex/hooks/session_start.py`
-- `.codex/hooks/user_prompt_submit.py`
-- `.codex/hooks/pre_tool_use.py`
-- `.codex/hooks/post_tool_use.py`
-- `.codex/hooks/stop.py`
+- `.codex/hooks/*.py`, copied from `plugins/ix-memory/hooks/`: `common.py` and the `ix_*.py`
+  helper modules it loads, `session_start.py`, `user_prompt_submit.py`, `pre_tool_use.py`,
+  `post_tool_use.py`, `stop.py`, and the Windows launcher `_launch.py`
 
 MCP:
 - registered with Codex as `ix-memory`, served by the Ix CLI (`ix mcp`) — no file is installed
@@ -188,7 +188,9 @@ Re-run the same installer; no flags are needed. Over any earlier version it:
 - runs `ix mcp install --host codex` with a time limit and reports how it went. A registration
   of the `mcp/server.py` that 2.4.1 and earlier shipped is replaced (and the old file removed);
   any other server already named `ix-memory` is left alone unless you pass `--force`;
-- removes the `/tmp/ix-codex-hooks` cache older hooks used, if it is yours and holds only cache files.
+- removes the `/tmp/ix-codex-hooks` cache older hooks used, if it is yours and holds only cache files;
+- with `--home`, once Codex runs the hooks bundled in the plugin, takes the plugin's entries out of
+  `~/.codex/hooks.json` and its scripts out of `~/.codex/hooks/`, so the two copies do not both run.
 
 If `hooks.json` changed, Codex asks you to trust the hooks again on its next start.
 
@@ -255,14 +257,12 @@ Codex also supports manual local plugin installation through a marketplace file.
 
 ### Hooks without the installer
 
-Copy these into either the repo or `~/.codex`:
+On Codex 0.155 or later, enabling the plugin is enough: its `hooks/hooks.json` comes with it.
+
+For an older Codex, copy these into either the repo or `~/.codex`:
 - `.codex/hooks.json`
-- `.codex/hooks/common.py` and the `.codex/hooks/ix_*.py` helper modules it loads
-- `.codex/hooks/session_start.py`
-- `.codex/hooks/user_prompt_submit.py`
-- `.codex/hooks/pre_tool_use.py`
-- `.codex/hooks/post_tool_use.py`
-- `.codex/hooks/stop.py`
+- every `plugins/ix-memory/hooks/*.py` into `.codex/hooks/` (`common.py`, the `ix_*.py`
+  helper modules it loads, and the five hook scripts)
 
 ## Verify active plugin version
 

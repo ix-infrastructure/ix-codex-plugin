@@ -50,7 +50,7 @@ def load_module(path: Path, name: str):
 installer = load_module(
     REPO_ROOT / "scripts" / "install_codex_integration.py", "ix_installer"
 )
-launcher = load_module(REPO_ROOT / ".codex" / "hooks" / "_launch.py", "ix_launch")
+launcher = load_module(REPO_ROOT / "plugins" / "ix-memory" / "hooks" / "_launch.py", "ix_launch")
 
 SHIPPED_HOOKS_JSON = REPO_ROOT / ".codex" / "hooks.json"
 
@@ -82,13 +82,13 @@ class ShippedConfig(unittest.TestCase):
     def test_every_named_hook_exists_on_disk(self) -> None:
         for command in commands_in(self.payload):
             name = installer.HOOK_COMMAND_RE.search(command).group("name")
-            self.assertTrue((REPO_ROOT / ".codex" / "hooks" / f"{name}.py").is_file())
+            self.assertTrue((REPO_ROOT / "plugins" / "ix-memory" / "hooks" / f"{name}.py").is_file())
 
     def test_the_launcher_ships_alongside_the_hooks(self) -> None:
         # install_hooks() copies `.codex/hooks/*.py`, so the launcher is picked
         # up by the same glob. If it moves, the rewritten commands point at
         # nothing.
-        self.assertTrue((REPO_ROOT / ".codex" / "hooks" / "_launch.py").is_file())
+        self.assertTrue((REPO_ROOT / "plugins" / "ix-memory" / "hooks" / "_launch.py").is_file())
 
 
 class Rewrite(unittest.TestCase):
