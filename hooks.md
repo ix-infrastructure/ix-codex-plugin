@@ -12,6 +12,8 @@ This repo ports the `ix-claude-plugin` hook model into Codex's hook runtime.
 | `PostToolUse` (`Bash\|apply_patch`) | `.codex/hooks/post_tool_use.py` | After a detected file write, request the guarded repository map (below) |
 | `Stop` | `.codex/hooks/stop.py` | After each response, request the guarded repository map (below) |
 
+The five hooks share helpers in `.codex/hooks/ix_*.py`, one module per concern: `ix_hookio` (stdin/stdout), `ix_proc` (running `ix`, Windows resolution and the cmd.exe shim guard), `ix_workspace` (git root, never `$HOME`), `ix_state` (caches), `ix_probes` (health and Pro), `ix_lookup`, `ix_shellparse`, `ix_patchparse`, `ix_summaries`, `ix_messages` and `ix_automap`. The hooks import them through `common.py`, which loads them from its own directory (symlinks resolved) and re-exports every name. A copy missing one of them makes every hook a silent no-op that prints a one-line hint on stderr. The installer copies every `.codex/hooks/*.py`, so a normal install or upgrade picks them up.
+
 ## Host Protocol (Codex 0.155.1)
 
 Verified against the `codex` 0.155.1 binary and `openai/codex@rust-v0.155.1` (`codex-rs/hooks/`):
@@ -103,7 +105,7 @@ All hook scripts are intentionally no-op friendly:
 
 ## write Detection Coverage
 
-The `detect_file_write()` function in `common.py` handles:
+The `detect_file_write()` function in `ix_shellparse.py` (re-exported by `common.py`) handles:
 - `> file` and `>> file` output redirections (excluding `2>` stderr redirects)
 - `tee file` invocations
 - Editor commands: `vim`, `vi`, `nvim`, `nano`, `emacs`, `hx`, `micro`

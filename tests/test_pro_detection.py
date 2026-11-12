@@ -28,6 +28,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from hook_namespace import patch_everywhere, set_everywhere
+
 HOOKS_DIR = Path(__file__).resolve().parents[1] / ".codex" / "hooks"
 
 
@@ -36,7 +38,7 @@ def _load_common(cache_dir: Path):
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    module.PRO_CACHE_PATH = cache_dir / "ix-pro.json"
+    set_everywhere(module, "PRO_CACHE_PATH", cache_dir / "ix-pro.json")
     return module
 
 
@@ -89,7 +91,7 @@ class ProDetectionTest(unittest.TestCase):
         self.common = _load_common(self.cache_dir)
 
     def _run_probe(self, result):
-        with patch.object(self.common, "run_command", return_value=result):
+        with patch_everywhere(self.common, "run_command", return_value=result):
             return self.common.ix_pro_available(None)
 
     def _cached(self) -> dict:
@@ -107,19 +109,19 @@ class ProDetectionTest(unittest.TestCase):
 
     def test_oss_install_is_not_reported_as_pro(self) -> None:
         fake = FakeIx(pro=False)
-        with patch.object(self.common, "run_command", side_effect=fake):
+        with patch_everywhere(self.common, "run_command", side_effect=fake):
             self.assertFalse(self.common.ix_pro_available(None))
         self.assertFalse(self._cached()["ok"])
 
     def test_pro_install_is_reported_as_pro(self) -> None:
         fake = FakeIx(pro=True)
-        with patch.object(self.common, "run_command", side_effect=fake):
+        with patch_everywhere(self.common, "run_command", side_effect=fake):
             self.assertTrue(self.common.ix_pro_available(None))
         self.assertTrue(self._cached()["ok"])
 
     def test_does_not_probe_with_help(self) -> None:
         fake = FakeIx(pro=False)
-        with patch.object(self.common, "run_command", side_effect=fake):
+        with patch_everywhere(self.common, "run_command", side_effect=fake):
             self.common.ix_pro_available(None)
         self.assertEqual([["ix", "briefing", "--format", "json"]], fake.calls)
 
@@ -157,7 +159,7 @@ class ProDetectionTest(unittest.TestCase):
 
     def test_a_blip_does_not_re_probe_on_every_call(self) -> None:
         """The probe runs a real `ix briefing`; a timeout must not spin on it."""
-        with patch.object(self.common, "run_command", return_value=None) as run:
+        with patch_everywhere(self.common, "run_command", return_value=None) as run:
             for _ in range(5):
                 self.assertFalse(self.common.ix_pro_available(None))
             self.assertEqual(
@@ -191,7 +193,7 @@ class ProDetectionTest(unittest.TestCase):
             self._run_probe(_completed(1, stderr="The 'briefing' command requires Ix Pro.\n"))
         )
         self._age_cache(self.common.PRO_PROBE_BACKOFF_SECONDS + 1)
-        with patch.object(self.common, "run_command") as run:
+        with patch_everywhere(self.common, "run_command") as run:
             self.assertFalse(self.common.ix_pro_available(None))
             run.assert_not_called()
         self._age_cache(self.common.PRO_TTL_SECONDS)
@@ -199,14 +201,14 @@ class ProDetectionTest(unittest.TestCase):
 
     def test_pro_is_not_re_probed_within_the_ttl(self) -> None:
         self.assertTrue(self._run_probe(_completed(0, stdout="{}")))
-        with patch.object(self.common, "run_command") as run:
+        with patch_everywhere(self.common, "run_command") as run:
             self.assertTrue(self.common.ix_pro_available(None))
             run.assert_not_called()
 
     # ── the probe's output is the briefing, so it is handed back ──────────────
 
     def test_a_fresh_probe_returns_the_briefing_it_paid_for(self) -> None:
-        with patch.object(
+        with patch_everywhere(
             self.common, "run_command", return_value=_completed(0, stdout='{"revision": 42}')
         ):
             pro, briefing = self.common.probe_pro(None)
@@ -215,7 +217,7 @@ class ProDetectionTest(unittest.TestCase):
 
     def test_nothing_is_handed_back_when_there_was_nothing_to_pay_for(self) -> None:
         """Cache hit, OSS stub and no-verdict all have no briefing to reuse."""
-        with patch.object(
+        with patch_everywhere(
             self.common, "run_command", return_value=_completed(0, stdout='{"revision": 42}')
         ):
             self.common.probe_pro(None)
@@ -224,11 +226,11 @@ class ProDetectionTest(unittest.TestCase):
 
         self.common.PRO_CACHE_PATH.unlink()
         stub = _completed(1, stderr="The 'briefing' command requires Ix Pro.\n")
-        with patch.object(self.common, "run_command", return_value=stub):
+        with patch_everywhere(self.common, "run_command", return_value=stub):
             self.assertEqual((False, None), self.common.probe_pro(None))
 
         self.common.PRO_CACHE_PATH.unlink()
-        with patch.object(self.common, "run_command", return_value=None):
+        with patch_everywhere(self.common, "run_command", return_value=None):
             self.assertEqual((False, None), self.common.probe_pro(None))
 
     # ── cache robustness ──────────────────────────────────────────────────────

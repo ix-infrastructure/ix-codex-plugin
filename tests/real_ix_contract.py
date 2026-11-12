@@ -42,6 +42,7 @@ REPO = Path(__file__).resolve().parents[1]
 HOOKS_DIR = REPO / ".codex" / "hooks"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from hook_namespace import point_caches_at  # noqa: E402
 from test_codex_hook_protocol import load_schema, validate  # noqa: E402
 from test_plugin_guidance import (  # noqa: E402
     FLAGS,
@@ -84,10 +85,7 @@ def load_common(state_dir: Path):
     common = importlib.util.module_from_spec(spec)
     sys.modules["common"] = common
     spec.loader.exec_module(common)
-    common.CACHE_DIR = state_dir
-    common.STATUS_CACHE_PATH = state_dir / "ix-status.json"
-    common.PRO_CACHE_PATH = state_dir / "ix-pro.json"
-    common.BRIEFING_CACHE_PATH = state_dir / "ix-briefing.txt"
+    point_caches_at(common, state_dir)
     return common
 
 

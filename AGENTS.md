@@ -169,7 +169,8 @@ plugins/ix-memory/
 .codex/
   hooks.json                    - hook event mapping
   hooks/
-    common.py                   - shared helpers
+    common.py                   - what the hooks import; loads and re-exports the ix_*.py helpers
+    ix_*.py                     - shared helpers, one module per concern (state, process, lookup, parsing, auto-map)
     session_start.py            - startup guidance
     user_prompt_submit.py       - Ix Pro briefing injection
     pre_tool_use.py             - Bash search/read interception, pre-edit impact warning

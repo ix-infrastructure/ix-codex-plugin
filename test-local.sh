@@ -53,13 +53,7 @@ python3 -c 'import json, pathlib; json.load(open(pathlib.Path("'"$REPO"'") / ".a
 python3 -c 'import json, pathlib; json.load(open(pathlib.Path("'"$REPO"'") / ".codex/hooks.json")); print("ok")' >/dev/null \
   && ok "hooks.json parses" || fail "hooks.json invalid"
 python3 -m py_compile \
-  "$REPO/.codex/hooks/common.py" \
-  "$REPO/.codex/hooks/session_start.py" \
-  "$REPO/.codex/hooks/user_prompt_submit.py" \
-  "$REPO/.codex/hooks/pre_tool_use.py" \
-  "$REPO/.codex/hooks/post_tool_use.py" \
-  "$REPO/.codex/hooks/stop.py" \
-  "$REPO/.codex/hooks/_launch.py" \
+  "$REPO"/.codex/hooks/*.py \
   "$REPO/scripts/install_codex_integration.py" >/dev/null \
   && ok "Python files compile" || fail "Python compile failed"
 

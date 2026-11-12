@@ -165,7 +165,7 @@ The plugin install step registers a marketplace entry. It does not auto-enable `
 
 Hooks:
 - `.codex/hooks.json`
-- `.codex/hooks/common.py`
+- `.codex/hooks/common.py` and the `.codex/hooks/ix_*.py` helper modules it loads
 - `.codex/hooks/session_start.py`
 - `.codex/hooks/user_prompt_submit.py`
 - `.codex/hooks/pre_tool_use.py`
@@ -257,7 +257,7 @@ Codex also supports manual local plugin installation through a marketplace file.
 
 Copy these into either the repo or `~/.codex`:
 - `.codex/hooks.json`
-- `.codex/hooks/common.py`
+- `.codex/hooks/common.py` and the `.codex/hooks/ix_*.py` helper modules it loads
 - `.codex/hooks/session_start.py`
 - `.codex/hooks/user_prompt_submit.py`
 - `.codex/hooks/pre_tool_use.py`

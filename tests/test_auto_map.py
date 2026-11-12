@@ -30,8 +30,11 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
+
+from hook_namespace import patch_everywhere, set_everywhere
 
 HOOKS_DIR = Path(__file__).resolve().parents[1] / ".codex" / "hooks"
 HAS_GIT = shutil.which("git") is not None
@@ -144,14 +147,14 @@ class GuardedAutoMapTest(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.tmp = Path(self._tmp.name).resolve()
         self.common, self.stop, self.post = _load("stop", "post_tool_use")
-        self.common.CACHE_DIR = self.tmp / "state"
+        set_everywhere(self.common, "CACHE_DIR", self.tmp / "state")
         # A home of our own, so nothing here depends on (or writes near) the
         # developer's real one.
         self.home = self.tmp / "home"
         self.home.mkdir()
-        home_patch = patch.object(self.common, "_home", return_value=self.home)
-        home_patch.start()
-        self.addCleanup(home_patch.stop)
+        home_patch = ExitStack()
+        self.addCleanup(home_patch.close)
+        home_patch.enter_context(patch_everywhere(self.common, "_home", return_value=self.home))
         self.repo = _git_init(self.home / "src" / "repo")
 
     def _request(self, fake: StrictFakeIx, cwd) -> bool:
@@ -217,7 +220,7 @@ class GuardedAutoMapTest(unittest.TestCase):
             ("empty", StrictFakeIx(status="")),
         ):
             with self.subTest(name):
-                self.common.CACHE_DIR = self.tmp / f"state-{name.replace(' ', '-')}"
+                set_everywhere(self.common, "CACHE_DIR", self.tmp / f"state-{name.replace(' ', '-')}")
                 self.assertFalse(self._request(fake, str(self.repo)))
                 self.assertEqual([], fake.spawned)
 
@@ -275,7 +278,7 @@ class GuardedAutoMapTest(unittest.TestCase):
         """Without a stamp every turn would map; refusing is the safe side."""
         blocker = self.tmp / "not-a-dir"
         blocker.write_text("")
-        self.common.CACHE_DIR = blocker / "state"
+        set_everywhere(self.common, "CACHE_DIR", blocker / "state")
         fake = StrictFakeIx()
         self.assertFalse(self._request(fake, str(self.repo)))
         self.assertEqual([], fake.spawned)
@@ -288,7 +291,7 @@ class GuardedAutoMapTest(unittest.TestCase):
             self.common.subprocess, "Popen", fake.popen
         ), patch.object(hook, "read_event", return_value=event), patch.object(
             hook, "ix_available", return_value=True
-        ), patch.object(
+        ), patch_everywhere(
             self.common, "emit_json", side_effect=emitted.append
         ):
             if hasattr(hook, "emit_json"):
@@ -349,9 +352,9 @@ class WorkspaceRootTest(unittest.TestCase):
         self.home = self.tmp / "home"
         (self.home / ".codex").mkdir(parents=True)
         (self.home / ".codex" / "hooks.json").write_text("{}")
-        home_patch = patch.object(self.common, "_home", return_value=self.home)
-        home_patch.start()
-        self.addCleanup(home_patch.stop)
+        home_patch = ExitStack()
+        self.addCleanup(home_patch.close)
+        home_patch.enter_context(patch_everywhere(self.common, "_home", return_value=self.home))
 
     def test_the_git_root_wins_over_a_home_install(self) -> None:
         repo = _git_init(self.home / "src" / "repo")
@@ -421,9 +424,9 @@ class StateDirTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             blocker = Path(tmp) / "file"
             blocker.write_text("")
-            common.CACHE_DIR = blocker / "state"
-            common.STATUS_CACHE_PATH = common.CACHE_DIR / "ix-status.json"
-            common.BRIEFING_CACHE_PATH = common.CACHE_DIR / "ix-briefing.txt"
+            set_everywhere(common, "CACHE_DIR", blocker / "state")
+            set_everywhere(common, "STATUS_CACHE_PATH", common.CACHE_DIR / "ix-status.json")
+            set_everywhere(common, "BRIEFING_CACHE_PATH", common.CACHE_DIR / "ix-briefing.txt")
             self.assertFalse(common._write_cache(common.STATUS_CACHE_PATH, {"ok": True}))
             common.mark_briefing_sent(tmp)  # must not raise
             self.assertTrue(common.briefing_due(tmp))
