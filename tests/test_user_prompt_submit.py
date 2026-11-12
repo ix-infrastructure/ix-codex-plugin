@@ -22,6 +22,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from hook_namespace import patch_everywhere, point_caches_at
+
 HOOKS_DIR = Path(__file__).resolve().parents[1] / ".codex" / "hooks"
 
 
@@ -36,10 +38,7 @@ def _load(name: str, cache_dir: Path):
     common = importlib.util.module_from_spec(spec)
     sys.modules["common"] = common
     spec.loader.exec_module(common)
-    common.CACHE_DIR = cache_dir
-    common.STATUS_CACHE_PATH = cache_dir / "ix-status.json"
-    common.PRO_CACHE_PATH = cache_dir / "ix-pro.json"
-    common.BRIEFING_CACHE_PATH = cache_dir / "ix-briefing.txt"
+    point_caches_at(common, cache_dir)
 
     spec = importlib.util.spec_from_file_location(name, HOOKS_DIR / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
@@ -76,7 +75,7 @@ class UserPromptSubmitTest(unittest.TestCase):
         # whole hook returns at the first guard on any machine that has no CLI
         # installed -- every assertion below then passes or fails on whether the
         # developer happens to have `ix` on PATH rather than on the code.
-        with patch.object(self.common, "ix_available", return_value=True), patch.object(
+        with patch_everywhere(self.common, "ix_available", return_value=True), patch_everywhere(
             self.common, "run_command", side_effect=fake_run
         ), patch.object(
             self.hook, "read_event", return_value={"cwd": str(self.cwd)}
@@ -126,7 +125,7 @@ class UserPromptSubmitTest(unittest.TestCase):
 
     def test_no_workspace_means_no_briefing(self) -> None:
         """A session in $HOME resolves to no project, and so to no `ix` calls."""
-        with patch.object(self.common, "_home", return_value=self.cwd.resolve()):
+        with patch_everywhere(self.common, "_home", return_value=self.cwd.resolve()):
             calls = self._run_hook()
         self.assertEqual([], calls)
         self.assertEqual([], self.emitted)
@@ -146,7 +145,7 @@ class UserPromptSubmitTest(unittest.TestCase):
             )
 
         emitted: list[dict] = []
-        with patch.object(self.common, "ix_available", return_value=True), patch.object(
+        with patch_everywhere(self.common, "ix_available", return_value=True), patch_everywhere(
             self.common, "run_command", side_effect=fake_run
         ), patch.object(
             self.hook, "read_event", return_value={"cwd": str(self.cwd)}

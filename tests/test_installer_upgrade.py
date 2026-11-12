@@ -297,7 +297,11 @@ class InstallerHarness(unittest.TestCase):
         self.assertNotIn("Bash", matchers)
         manifest = json.loads((self.codex / "ix-plugin-version.json").read_text())
         self.assertEqual(PLUGIN_VERSION, manifest["plugin_version"])
-        self.assertIn(".codex/hooks/common.py", manifest["files"])
+        # Every module the hooks are made of, not only the five entry points:
+        # common.py loads the ix_*.py beside it, so one left out breaks them all.
+        for source in sorted((REPO / ".codex" / "hooks").glob("*.py")):
+            self.assertIn(f".codex/hooks/{source.name}", manifest["files"])
+            self.assertTrue((self.codex / "hooks" / source.name).is_file(), source.name)
         market = json.loads((self.home / ".agents" / "plugins" / "marketplace.json").read_text())
         names = [p["name"] for p in market["plugins"]]
         self.assertEqual(1, names.count("ix-memory"))
