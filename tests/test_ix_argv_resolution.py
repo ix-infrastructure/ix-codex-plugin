@@ -30,7 +30,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-HOOKS_DIR = Path(__file__).resolve().parents[1] / ".codex" / "hooks"
+HOOKS_DIR = Path(__file__).resolve().parents[1] / "plugins" / "ix-memory" / "hooks"
 # Scanned by the argv guard too: the installer spawns `ix` as well, and the
 # guard covering only the hooks is exactly how the --mcp path came to spawn
 # the bare name.

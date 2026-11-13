@@ -41,7 +41,7 @@ from unittest.mock import patch
 from hook_namespace import patch_everywhere, point_caches_at
 
 REPO = Path(__file__).resolve().parents[1]
-HOOKS_DIR = REPO / ".codex" / "hooks"
+HOOKS_DIR = REPO / "plugins" / "ix-memory" / "hooks"
 SCHEMAS = Path(__file__).resolve().parent / "fixtures" / "codex-0.155.1"
 
 SCHEMA_FILES = {
