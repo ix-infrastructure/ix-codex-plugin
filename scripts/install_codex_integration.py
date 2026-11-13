@@ -32,6 +32,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
 from pathlib import Path
 
@@ -1021,10 +1022,14 @@ def install_hooks(target_root: Path, mode: str, force: bool) -> list[Path]:
 MIN_CODEX_FOR_PLUGIN_HOOKS = (0, 155, 0)
 
 
-def _codex_version() -> tuple[int, ...] | None:
+def _codex_executable() -> str | None:
     executable = shutil.which("codex", path=os.environ.get("PATH"))
     if executable is None or not os.path.isabs(executable):
         return None
+    return executable
+
+
+def _codex_version(executable: str) -> tuple[int, ...] | None:
     try:
         out = subprocess.run(
             [executable, "--version"], capture_output=True, text=True, timeout=30
@@ -1035,25 +1040,156 @@ def _codex_version() -> tuple[int, ...] | None:
     return tuple(int(g) for g in match.groups()) if match else None
 
 
-def plugin_hooks_active(codex_home: Path) -> str | None:
-    """Why Codex already runs the hooks bundled in the plugin, or None if it may not.
+# How long the app server gets to answer `hooks/list`. It answers in well under a
+# second (0.162.1); a slower one leaves the hooks.json entries where they are.
+HOOKS_LIST_TIMEOUT_SECONDS = 20.0
 
-    All three must hold: a Codex that loads plugin hooks, ix-memory enabled in its
-    config.toml (`[plugins."ix-memory@<marketplace>"] enabled = true`, which
-    installing it in Codex writes), and Codex's installed copy of the plugin
-    (`plugins/cache/<marketplace>/ix-memory/<version>/`) carrying `hooks/hooks.json`.
-    Codex refreshes that copy only when the plugin is installed again, so the copy
-    is what counts, not the files this installer just wrote. Anything unreadable
-    answers None: keeping the hooks.json entries is the safe side, and the hooks
+
+def _codex_hooks_list(executable: str, codex_home: Path, cwd: Path) -> list[dict] | None:
+    """The hooks Codex loads for `cwd`, as its app server's `hooks/list` reports them.
+
+    Each carries `pluginId`, `eventName`, `enabled` and `trustStatus` (`trusted`,
+    `untrusted`, `modified` or `managed`). Codex keeps trust as a hash of each
+    hook's definition in config.toml (`[hooks.state."<key>"] trusted_hash`), and
+    only Codex knows how that hash is computed, so it is asked rather than the
+    file read. None when it cannot be asked or does not answer.
+    """
+    requests = [
+        {"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "ix-codex-installer", "version": "0"}}},
+        {"method": "initialized"},
+        {"id": 2, "method": "hooks/list", "params": {"cwds": [str(cwd)]}},
+    ]
+    try:
+        process = subprocess.Popen(
+            [executable, "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=str(cwd),
+            env={**os.environ, "CODEX_HOME": str(codex_home)},
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+    answer: list[object] = []
+
+    def read() -> None:
+        assert process.stdout is not None
+        for line in process.stdout:
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(message, dict) and message.get("id") == 2:
+                answer.append(message)
+                return
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    try:
+        assert process.stdin is not None
+        # stdin stays open until the answer is in: the app server exits at EOF
+        # without answering requests still in flight.
+        process.stdin.write("".join(json.dumps(r) + "\n" for r in requests))
+        process.stdin.flush()
+        reader.join(HOOKS_LIST_TIMEOUT_SECONDS)
+    except (OSError, ValueError):
+        pass
+    finally:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=10)
+        except subprocess.SubprocessError:
+            pass
+        for stream in (process.stdin, process.stdout):
+            try:
+                if stream is not None:
+                    stream.close()
+            except OSError:
+                pass
+
+    if not answer:
+        return None
+    result = answer[0].get("result") if isinstance(answer[0], dict) else None
+    data = result.get("data") if isinstance(result, dict) else None
+    if not isinstance(data, list):
+        return None
+    hooks: list[dict] = []
+    for entry in data:
+        listed = entry.get("hooks") if isinstance(entry, dict) else None
+        if not isinstance(listed, list):
+            return None
+        hooks.extend(h for h in listed if isinstance(h, dict))
+    return hooks
+
+
+def _plugin_events() -> set[str]:
+    """The events the plugin's hooks.json registers, as `hooks/list` names them."""
+    try:
+        payload = json.loads((source_hooks_dir() / "hooks.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return set()
+    events = payload.get("hooks") if isinstance(payload, dict) else None
+    if not isinstance(events, dict):
+        return set()
+    return {name[:1].lower() + name[1:] for name in events}
+
+
+def _untrusted_events(hooks: list[dict], plugin_id: str) -> list[str]:
+    """The plugin events Codex would not run for `plugin_id`: missing, disabled or not trusted."""
+    wanted = _plugin_events()
+    if not wanted:
+        return ["(the plugin's hooks.json could not be read)"]
+    ready: dict[str, bool] = {}
+    for hook in hooks:
+        if hook.get("pluginId") != plugin_id or hook.get("source") != "plugin":
+            continue
+        event = str(hook.get("eventName"))
+        ok = hook.get("enabled") is True and hook.get("trustStatus") in ("trusted", "managed")
+        ready[event] = ready.get(event, True) and ok
+    return sorted(event for event in wanted if not ready.get(event, False))
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def plugin_hooks_status(codex_home: Path, cwd: Path) -> tuple[str | None, str | None]:
+    """(why Codex already runs the plugin's hooks, None) -- or (None, a hint, or None).
+
+    The first is set only when all of these hold: a Codex that loads plugin hooks,
+    ix-memory enabled in its config.toml (`[plugins."ix-memory@<marketplace>"]
+    enabled = true`, which installing it in Codex writes), Codex's installed copy
+    of the plugin (`plugins/cache/<marketplace>/ix-memory/<version>/`) carrying
+    `hooks/hooks.json`, and Codex reporting every one of those hooks enabled and
+    trusted. Enabling the plugin does not trust its hooks; until the user accepts
+    "Hooks need review", Codex (and `codex exec` always) skips them, so the
+    hooks.json entries the user already trusted are what runs. Codex refreshes
+    its copy only when the plugin is installed again, so the copy is what counts,
+    not the files this installer just wrote.
+
+    Never on Windows: the plugin's `commandWindows` has not been run under Codex
+    there, and the `--hooks` entries are known to work. Anything unreadable
+    answers None as well: keeping the entries is the safe side, and the hooks
     drop a second delivery of the same event themselves (ix_once.py).
     """
-    version = _codex_version()
+    if _is_windows():
+        return None, None
+    executable = _codex_executable()
+    version = _codex_version(executable) if executable is not None else None
     if version is None or version < MIN_CODEX_FOR_PLUGIN_HOOKS:
-        return None
+        return None, None
     config = _load_toml(codex_home / "config.toml")
     plugins = config.get("plugins") if config else None
     if not isinstance(plugins, dict):
-        return None
+        return None, None
+    candidates: list[str] = []
     for key, entry in plugins.items():
         name, _, marketplace = str(key).partition("@")
         if name != PLUGIN_NAME or not marketplace or "/" in marketplace or "\\" in marketplace:
@@ -1062,19 +1198,81 @@ def plugin_hooks_active(codex_home: Path) -> str | None:
             continue
         cache = codex_home / "plugins" / "cache" / marketplace / PLUGIN_NAME
         if any(cache.glob("*/hooks/hooks.json")):
+            candidates.append(str(key))
+    if not candidates:
+        return None, None
+    assert executable is not None
+    hooks = _codex_hooks_list(executable, codex_home, cwd)
+    if hooks is None:
+        return None, None
+    hint: str | None = None
+    for key in candidates:
+        missing = _untrusted_events(hooks, key)
+        if not missing:
             shown = ".".join(str(part) for part in version)
-            return f"Codex {shown} runs the hooks bundled in {key}"
-    return None
+            return f"Codex {shown} runs the hooks bundled in {key}", None
+        hint = (
+            f"Codex has not trusted the hooks bundled in {key} yet ({', '.join(missing)}), "
+            "so the Ix entries in hooks.json stay. Start Codex, review and trust them "
+            "(\"Hooks need review\"), then re-run the installer to remove the entries."
+        )
+    return None, hint
 
 
-def plan_retire_hooks(tx: Transaction, target_root: Path) -> list[Path]:
+def strip_plugin_hooks(existing: dict) -> tuple[dict, int]:
+    """`existing` without the plugin's handlers, and how many had to stay.
+
+    Codex keys a non-managed hook's trust by event, group and handler index
+    (`<file>:<event>:<group>:<handler>`, as `hooks/list` reports it), so taking a
+    handler out must not move anyone else's. A group left with no handlers is
+    kept as `{"hooks": []}` while a later group of the same event still needs its
+    index (Codex accepts an empty group and counts it), and dropped when none
+    does. A plugin handler that comes before one of the user's in the same group
+    stays where it is: removing it would move theirs.
+    """
+    result = copy.deepcopy(existing)
+    events = result.get("hooks", {})
+    left = 0
+    for event in list(events):
+        groups: list = []
+        emptied: list[bool] = []
+        for group in events[event]:
+            handlers = group.get("hooks", [])
+            last_theirs = max(
+                (i for i, h in enumerate(handlers) if not is_plugin_handler(h)), default=-1
+            )
+            kept = handlers[: last_theirs + 1]
+            left += sum(1 for h in kept if is_plugin_handler(h))
+            if len(kept) == len(handlers):
+                groups.append(group)
+                emptied.append(False)
+            elif kept:
+                groups.append({**group, "hooks": kept})
+                emptied.append(False)
+            else:
+                groups.append({"hooks": []})
+                emptied.append(True)
+        while emptied and emptied[-1]:
+            groups.pop()
+            emptied.pop()
+        if groups:
+            events[event] = groups
+        else:
+            del events[event]
+    return result, left
+
+
+def plan_retire_hooks(tx: Transaction, target_root: Path) -> tuple[list[Path], int]:
     """Take the plugin's entries out of `.codex/hooks.json` and its scripts out of
     `.codex/hooks/`, so the hooks.json copy and the bundled copy do not both fire.
 
-    Every other hook in the file is kept where it is. A hooks.json this cannot
-    read is left alone: the plugin's entries cannot be told apart in it.
+    Every other hook in the file keeps its position (strip_plugin_hooks), and the
+    second value counts the plugin handlers that had to stay for that. A
+    hooks.json this cannot read is left alone: the plugin's entries cannot be
+    told apart in it.
     """
     paths: list[Path] = []
+    left = 0
     hooks_json = target_root / ".codex" / "hooks.json"
     if _lexists(hooks_json):
         try:
@@ -1082,7 +1280,7 @@ def plan_retire_hooks(tx: Transaction, target_root: Path) -> list[Path]:
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             existing = None
         if _hooks_shape_ok(existing):
-            kept = merge_hooks(existing, {"hooks": {}})
+            kept, left = strip_plugin_hooks(existing)
             if kept == {"hooks": {}}:
                 tx.remove(hooks_json)
             elif kept != existing or hooks_json.is_symlink():
@@ -1095,7 +1293,7 @@ def plan_retire_hooks(tx: Transaction, target_root: Path) -> list[Path]:
         if isinstance(relative, str) and re.fullmatch(r"\.codex/hooks/[A-Za-z0-9_]+\.py", relative):
             tx.remove(target_root / relative)
     paths.append(plan_version_file(tx, target_root, []))
-    return paths
+    return paths, left
 
 
 # --------------------------------------------------------------------------
@@ -1383,7 +1581,12 @@ def main(argv: list[str] | None = None) -> int:
     hooks_json = target_root / ".codex" / "hooks.json"
     # Only for --home: a repo's .codex/hooks.json is shared with teammates whose
     # Codex this machine knows nothing about.
-    bundled = plugin_hooks_active(codex_config_path().parent) if args.hooks and args.home else None
+    bundled, bundled_hint = (
+        plugin_hooks_status(codex_config_path().parent, target_root)
+        if args.hooks and args.home
+        else (None, None)
+    )
+    left_in_place = 0
     try:
         if args.plugin:
             installed.extend(
@@ -1398,7 +1601,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         if bundled is not None:
-            installed.extend(plan_retire_hooks(tx, target_root))
+            retired, left_in_place = plan_retire_hooks(tx, target_root)
+            installed.extend(retired)
         elif args.hooks:
             installed.extend(plan_hooks(tx, target_root, args.mode, args.force))
         hooks_changed = tx.changes(hooks_json)
@@ -1426,9 +1630,19 @@ def main(argv: list[str] | None = None) -> int:
     if bundled is not None:
         print(f"Hooks: {bundled}, so the Ix entries in {hooks_json} are not needed.")
         if hooks_changed:
-            kept = " Your other hooks there were kept." if _lexists(hooks_json) else ""
+            kept = (
+                " Your other hooks there were kept, each where it was, so they stay trusted."
+                if _lexists(hooks_json)
+                else ""
+            )
             print(f"They were removed; restart Codex.{kept}")
-        print("Codex asks you to review and trust the plugin's hooks before it runs them.")
+        if left_in_place:
+            print(
+                f"Ix entries left in {hooks_json}: {left_in_place}. Each comes before a hook of "
+                "yours in the same group, and removing it would move yours."
+            )
+    elif bundled_hint is not None:
+        print(bundled_hint)
     if args.hooks:
         if bundled is None and hooks_changed:
             print("Restart Codex so it reloads hooks.json.")

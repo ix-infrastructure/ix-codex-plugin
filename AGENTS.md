@@ -178,6 +178,7 @@ plugins/ix-memory/
 
 .codex/
   hooks.json                    - the same mapping for `--hooks` (Codex without plugin hooks); runs .codex/hooks/*.py
+                                  (in this checkout: `./install.sh --repo . --hooks --mode symlink`; git-ignored)
 
 agents/
   ix-explorer.md

@@ -19,8 +19,11 @@ import time
 
 import ix_state
 
-# A real repeat is milliseconds apart. A marker older than this is a leftover.
-CLAIM_WINDOW_SECONDS = 120
+# The copies of one event start together, milliseconds apart. Identical bytes
+# further apart are a new event: with no per-run field in the input (a session
+# resumed twice the same way, say), a long window would swallow the second one
+# even with a single copy registered. A marker older than this is a leftover.
+CLAIM_WINDOW_SECONDS = 10
 _PRUNE_EVERY_SECONDS = 600
 
 

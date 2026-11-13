@@ -256,33 +256,101 @@ class OnceModuleTest(unittest.TestCase):
         self.assertTrue(once("event"))
         self.assertFalse(once("event"))
 
+    def test_the_same_bytes_seconds_later_are_a_new_event(self) -> None:
+        # One copy registered, and a SessionStart with nothing per-run in it
+        # (the same session resumed twice): the second must still get guidance.
+        once = self.common.first_delivery
+        event = json.dumps({"session_id": "s1", "hook_event_name": "SessionStart", "source": "resume"})
+        self.assertTrue(once(event))
+        marker = next(p for p in (self.cache / "events").iterdir() if not p.name.startswith("."))
+        earlier = time.time() - 15
+        os.utime(marker, (earlier, earlier))
+        self.assertTrue(once(event))
+
     def test_an_unusable_state_directory_runs_every_copy(self) -> None:
         (self.cache / "events").write_text("not a directory", encoding="utf-8")
         self.assertTrue(self.common.first_delivery("event"))
         self.assertTrue(self.common.first_delivery("event"))
 
 
-FAKE_CODEX = '#!/bin/sh\necho "codex-cli ${FAKE_CODEX_VERSION:-0.162.1}"\n'
+# `codex --version`, and `codex app-server` answering `hooks/list` the way 0.162.1
+# does: one entry per hook of each enabled ix-memory plugin whose cached copy has
+# hooks/hooks.json, with the trust status `fake-hook-trust.json` in CODEX_HOME
+# gives its event ("untrusted" when it names none, as for a hook never reviewed).
+FAKE_CODEX = r"""
+import json, os, sys, time, tomllib
+from pathlib import Path
+
+if sys.argv[1:] == ["--version"]:
+    print("codex-cli " + os.environ.get("FAKE_CODEX_VERSION", "0.162.1"))
+    sys.exit(0)
+if sys.argv[1:] != ["app-server"]:
+    sys.exit(2)
+home = Path(os.environ["CODEX_HOME"])
+if os.environ.get("FAKE_CODEX_HANG"):
+    time.sleep(120)
+try:
+    trust = json.loads((home / "fake-hook-trust.json").read_text(encoding="utf-8"))
+except OSError:
+    trust = {}
+config = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
+hooks = []
+for key, entry in config.get("plugins", {}).items():
+    name, _, market = key.partition("@")
+    if name != "ix-memory" or not entry.get("enabled"):
+        continue
+    for copy in sorted((home / "plugins" / "cache" / market / name).glob("*/hooks/hooks.json")):
+        for event in json.loads(copy.read_text(encoding="utf-8"))["hooks"]:
+            camel = event[0].lower() + event[1:]
+            hooks.append({"key": f"{key}:hooks/hooks.json:{camel}:0:0", "eventName": camel,
+                          "source": "plugin", "pluginId": key, "enabled": True,
+                          "trustStatus": trust.get(event, "untrusted")})
+for line in sys.stdin:
+    request = json.loads(line)
+    if request.get("id") == 1:
+        print(json.dumps({"id": 1, "result": {}}), flush=True)
+    elif request.get("id") == 2:
+        print(json.dumps({"method": "configWarning", "params": {}}), flush=True)
+        data = [{"cwd": c, "hooks": hooks, "warnings": [], "errors": []}
+                for c in request["params"]["cwds"]]
+        print(json.dumps({"id": 2, "result": {"data": data}}), flush=True)
+"""
 
 
+def _load_installer(name: str):
+    spec = importlib.util.spec_from_file_location(name, REPO / "scripts" / "install_codex_integration.py")
+    installer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(installer)
+    return installer
+
+
+def _write_fake_codex(bin_dir: Path) -> None:
+    script = bin_dir / "fake_codex.py"
+    script.write_text(FAKE_CODEX, encoding="utf-8")
+    fake = bin_dir / "codex"
+    fake.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n', encoding="utf-8")
+    fake.chmod(0o755)
+
+
+@unittest.skipIf(os.name == "nt", "the installer never retires hooks.json entries on Windows")
 class InstallerRetiresHooksJsonTest(InstallerHarness):
     def setUp(self) -> None:
         super().setUp()
-        if os.name == "nt":
-            (self.bin / "codex.cmd").write_text(
-                "@echo codex-cli %FAKE_CODEX_VERSION%\r\n", encoding="utf-8"
-            )
-        else:
-            fake = self.bin / "codex"
-            fake.write_text(FAKE_CODEX, encoding="utf-8")
-            fake.chmod(0o755)
+        if sys.version_info < (3, 11):
+            self.skipTest("the fake codex reads config.toml with tomllib")
+        _write_fake_codex(self.bin)
 
     def ok(self, *args: str, **kwargs):  # type: ignore[override]
         kwargs.setdefault("FAKE_CODEX_VERSION", "0.162.1")
         return super().ok(*args, **kwargs)
 
-    def install_plugin_in_codex(self, marketplace: str = "ix-codex-plugin", hooks: bool = True) -> None:
-        """What `codex plugin add ix-memory@<marketplace>` leaves behind."""
+    def install_plugin_in_codex(
+        self, marketplace: str = "ix-codex-plugin", hooks: bool = True, trusted: bool = True
+    ) -> None:
+        """What `codex plugin add ix-memory@<marketplace>` leaves behind, and with
+        `trusted`, the user accepting "Hooks need review" for all five hooks."""
+        if trusted:
+            self.trust_plugin_hooks({event: "trusted" for event in EVENTS})
         config = self.codex / "config.toml"
         text = config.read_text(encoding="utf-8") if config.exists() else ""
         config.write_text(
@@ -292,6 +360,9 @@ class InstallerRetiresHooksJsonTest(InstallerHarness):
         shutil.copytree(PLUGIN, copy, ignore=shutil.ignore_patterns("__pycache__"))
         if not hooks:
             shutil.rmtree(copy / "hooks")
+
+    def trust_plugin_hooks(self, statuses: dict[str, str]) -> None:
+        (self.codex / "fake-hook-trust.json").write_text(json.dumps(statuses), encoding="utf-8")
 
     def add_user_hook(self) -> None:
         payload = self.hooks_json()
@@ -350,6 +421,44 @@ class InstallerRetiresHooksJsonTest(InstallerHarness):
                 self.assertEqual(5, len(plugin_handlers(self.hooks_json())), result.stdout)
                 self.assertIn("common.py", self.installed_scripts())
 
+    def test_entries_stay_until_codex_trusts_every_plugin_hook(self) -> None:
+        cases = {
+            "never reviewed": {},
+            "one changed since it was trusted": {
+                **{event: "trusted" for event in EVENTS},
+                "PreToolUse": "modified",
+            },
+        }
+        for label, statuses in cases.items():
+            with self.subTest(label):
+                shutil.rmtree(self.codex)
+                self.codex.mkdir()
+                self.ok("--home")
+                before = (self.codex / "hooks.json").read_bytes()
+                self.install_plugin_in_codex(trusted=False)
+                self.trust_plugin_hooks(statuses)
+                result = self.ok("--home")
+                self.assertEqual(before, (self.codex / "hooks.json").read_bytes())
+                self.assertIn("common.py", self.installed_scripts())
+                self.assertIn("has not trusted the hooks bundled in ix-memory@ix-codex-plugin", result.stdout)
+                self.assertIn("preToolUse", result.stdout)
+                self.assertIn("hooks you already trusted stay trusted", result.stdout)
+
+        # Once the user trusts them in Codex, the next run retires the entries.
+        self.trust_plugin_hooks({event: "trusted" for event in EVENTS})
+        result = self.ok("--home")
+        self.assertIn("runs the hooks bundled in", result.stdout)
+        self.assertFalse((self.codex / "hooks.json").exists())
+
+    def test_a_user_hook_after_the_ix_group_keeps_its_index(self) -> None:
+        self.ok("--home")
+        payload = self.hooks_json()
+        payload["hooks"]["Stop"].append({"hooks": [USER_HOOK]})
+        (self.codex / "hooks.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        self.install_plugin_in_codex()
+        self.ok("--home")
+        self.assertEqual({"Stop": [{"hooks": []}, {"hooks": [USER_HOOK]}]}, self.hooks_json()["hooks"])
+
     def test_no_codex_on_path_keeps_the_entries(self) -> None:
         self.ok("--home")
         self.install_plugin_in_codex()
@@ -371,6 +480,105 @@ class InstallerRetiresHooksJsonTest(InstallerHarness):
         self.ok("--repo", str(repo), "--hooks")
         payload = json.loads((repo / ".codex" / "hooks.json").read_text(encoding="utf-8"))
         self.assertEqual(5, len(plugin_handlers(payload)))
+
+
+IX_HANDLER = {"type": "command", "command": "python3 .codex/hooks/stop.py"}
+MINE = {"type": "command", "command": "echo mine"}
+
+
+class StripPluginHooksTest(unittest.TestCase):
+    """Codex keys a user hook's trust by event, group and handler index; retiring
+    the Ix entries must leave every other handler at the index it had."""
+
+    def setUp(self) -> None:
+        self.installer = _load_installer("installer_strip")
+        self.assertTrue(self.installer.is_plugin_handler(IX_HANDLER))
+
+    def strip(self, events: dict) -> tuple[dict, int]:
+        kept, left = self.installer.strip_plugin_hooks({"hooks": events})
+        return kept["hooks"], left
+
+    def test_a_later_group_keeps_its_index(self) -> None:
+        self.assertEqual(
+            ({"Stop": [{"hooks": []}, {"hooks": [MINE]}]}, 0),
+            self.strip({"Stop": [{"hooks": [IX_HANDLER]}, {"hooks": [MINE]}]}),
+        )
+
+    def test_trailing_ix_groups_go(self) -> None:
+        self.assertEqual(
+            ({"Stop": [{"hooks": [MINE]}]}, 0),
+            self.strip({"Stop": [{"hooks": [MINE]}, {"hooks": [IX_HANDLER]}, {"hooks": [IX_HANDLER]}]}),
+        )
+        self.assertEqual(({}, 0), self.strip({"Stop": [{"hooks": [IX_HANDLER]}]}))
+
+    def test_a_handler_of_theirs_after_ours_in_one_group_keeps_ours_in_place(self) -> None:
+        self.assertEqual(
+            ({"Stop": [{"matcher": "x", "hooks": [IX_HANDLER, MINE]}]}, 1),
+            self.strip({"Stop": [{"matcher": "x", "hooks": [IX_HANDLER, MINE]}]}),
+        )
+        self.assertEqual(
+            ({"Stop": [{"matcher": "x", "hooks": [MINE]}]}, 0),
+            self.strip({"Stop": [{"matcher": "x", "hooks": [MINE, IX_HANDLER]}]}),
+        )
+
+    def test_a_users_own_empty_group_is_left_alone(self) -> None:
+        self.assertEqual(
+            ({"Stop": [{"hooks": []}]}, 0), self.strip({"Stop": [{"hooks": []}]})
+        )
+
+
+class PluginHooksStatusTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.installer = _load_installer("installer_status")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def test_windows_never_retires(self) -> None:
+        # The plugin's commandWindows has not been run under Codex; the --hooks
+        # entries are known to work there, so they stay whatever Codex reports.
+        self.installer._is_windows = lambda: True
+
+        def must_not_run() -> None:
+            raise AssertionError("asked codex on Windows")
+
+        self.installer._codex_executable = must_not_run
+        self.assertEqual((None, None), self.installer.plugin_hooks_status(self.root, self.root))
+
+    @unittest.skipIf(os.name == "nt", "a POSIX fake codex")
+    @unittest.skipIf(sys.version_info < (3, 11), "the fake codex reads config.toml with tomllib")
+    def test_an_app_server_that_does_not_answer_keeps_the_entries(self) -> None:
+        _write_fake_codex(self.root)
+        self.installer.HOOKS_LIST_TIMEOUT_SECONDS = 1
+        os.environ["FAKE_CODEX_HANG"] = "1"
+        self.addCleanup(os.environ.pop, "FAKE_CODEX_HANG", None)
+        started = time.monotonic()
+        self.assertIsNone(self.installer._codex_hooks_list(str(self.root / "codex"), self.root, self.root))
+        self.assertLess(time.monotonic() - started, 30)
+
+
+class CheckoutInstallIsIgnoredTest(unittest.TestCase):
+    """`./install.sh --repo . --hooks` in this checkout writes copies (or links) of
+    plugins/ix-memory/hooks/ into .codex/hooks/; they must not show up as new files."""
+
+    def test_what_an_install_into_the_checkout_writes_is_ignored(self) -> None:
+        git = shutil.which("git")
+        if git is None:
+            self.skipTest("no git")
+        inside = subprocess.run(
+            [git, "-C", str(REPO), "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True
+        )
+        if inside.returncode != 0 or inside.stdout.strip() != "true":
+            self.skipTest("not a git checkout")
+        written = [".codex/hooks/common.py", ".codex/hooks/session_start.py", ".codex/ix-plugin-version.json"]
+        result = subprocess.run(
+            [git, "-C", str(REPO), "check-ignore", "--no-index", *written], capture_output=True, text=True
+        )
+        self.assertEqual(written, result.stdout.split())
+        tracked = subprocess.run(
+            [git, "-C", str(REPO), "check-ignore", "--no-index", ".codex/hooks.json"], capture_output=True, text=True
+        )
+        self.assertEqual("", tracked.stdout.strip())
 
 
 class TreeCopySkipsBytecodeTest(unittest.TestCase):

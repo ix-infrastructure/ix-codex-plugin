@@ -108,7 +108,7 @@ All hook text meant for the model is returned as `hookSpecificOutput.additionalC
 
 ### Hook trust
 
-The hooks ship inside the plugin, in `plugins/ix-memory/hooks/hooks.json`. Codex 0.155 and later runs them from its installed copy of `ix-memory` once the plugin is enabled, with `$PLUGIN_ROOT` pointing at that copy; no `hooks.json` of your own is needed. `--hooks` is the fallback for a Codex that does not run plugin hooks: it writes the same hooks into `.codex/hooks.json` and copies the scripts to `.codex/hooks/`. A `--home` install checks first: when `codex --version` is 0.155 or later, `ix-memory` is enabled in `~/.codex/config.toml` and Codex's installed copy of the plugin carries `hooks/hooks.json`, it removes its own entries from `~/.codex/hooks.json` (and its scripts) instead, keeping every other hook there. Until then both copies may be registered; the hooks notice that Codex handed them the same event twice and run it once.
+The hooks ship inside the plugin, in `plugins/ix-memory/hooks/hooks.json`. Codex 0.155 and later runs them from its installed copy of `ix-memory` once the plugin is enabled, with `$PLUGIN_ROOT` pointing at that copy; no `hooks.json` of your own is needed. `--hooks` is the fallback for a Codex that does not run plugin hooks: it writes the same hooks into `.codex/hooks.json` and copies the scripts to `.codex/hooks/`. A `--home` install checks first: when `codex --version` is 0.155 or later, `ix-memory` is enabled in `~/.codex/config.toml`, Codex's installed copy of the plugin carries `hooks/hooks.json`, and Codex reports every one of those hooks as trusted, it removes its own entries from `~/.codex/hooks.json` (and its scripts) instead, keeping every other hook there at the position it had, so it stays trusted. Until you trust the plugin's hooks the entries stay, so `codex exec` keeps running the ones you already trusted; re-run the installer after trusting them. On Windows the entries always stay. While both copies are registered, the hooks notice that Codex handed them the same event twice and run it once.
 
 Codex (0.155) runs a hook from `hooks.json`, or from a plugin, only after you have reviewed and trusted its exact definition. After installing or updating the hooks, start Codex interactively and accept the "Hooks need review" prompt; until then the Ix hooks are skipped. `codex exec` cannot ask, so it skips untrusted hooks.
 
@@ -189,8 +189,9 @@ Re-run the same installer; no flags are needed. Over any earlier version it:
   of the `mcp/server.py` that 2.4.1 and earlier shipped is replaced (and the old file removed);
   any other server already named `ix-memory` is left alone unless you pass `--force`;
 - removes the `/tmp/ix-codex-hooks` cache older hooks used, if it is yours and holds only cache files;
-- with `--home`, once Codex runs the hooks bundled in the plugin, takes the plugin's entries out of
-  `~/.codex/hooks.json` and its scripts out of `~/.codex/hooks/`, so the two copies do not both run.
+- with `--home` (not on Windows), once Codex runs the hooks bundled in the plugin and you have
+  trusted them, takes the plugin's entries out of `~/.codex/hooks.json` and its scripts out of
+  `~/.codex/hooks/`, so the two copies do not both run.
 
 If `hooks.json` changed, Codex asks you to trust the hooks again on its next start.
 
