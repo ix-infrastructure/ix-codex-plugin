@@ -114,10 +114,13 @@ function Invoke-Git {
     return Invoke-Native -Command "git" -Arguments $Arguments -FailureMessage $FailureMessage
 }
 
+# Returns the command as an array: the leading comma stops PowerShell from
+# unrolling a one-element array into a bare string, which would make
+# $pythonCmd[0] the first character ("p") rather than "python".
 function Get-PythonCommand {
-    if (Get-Command py -ErrorAction SilentlyContinue) { return @("py", "-3") }
-    if (Get-Command python -ErrorAction SilentlyContinue) { return @("python") }
-    if (Get-Command python3 -ErrorAction SilentlyContinue) { return @("python3") }
+    if (Get-Command py -ErrorAction SilentlyContinue) { return ,@("py", "-3") }
+    if (Get-Command python -ErrorAction SilentlyContinue) { return ,@("python") }
+    if (Get-Command python3 -ErrorAction SilentlyContinue) { return ,@("python3") }
     Write-Err "Python 3 is required to run the Codex installer."
 }
 
@@ -219,12 +222,14 @@ function Sync-Repo {
     Fetch-Ref
 }
 
-function Ensure-Defaults([string[]]$args) {
+# Not `$args`: that is PowerShell's automatic variable, and a parameter of that
+# name arrives empty, silently replacing every user argument with the defaults.
+function Ensure-Defaults([string[]]$Arguments) {
     $result = [System.Collections.Generic.List[string]]::new()
     $hasTarget = $false
     $hasAction = $false
 
-    foreach ($arg in $args) {
+    foreach ($arg in $Arguments) {
         if ($arg -eq "--home" -or $arg -eq "--repo") { $hasTarget = $true }
         if ($arg -eq "--plugin" -or $arg -eq "--hooks" -or $arg -eq "--mcp") { $hasAction = $true }
     }
@@ -235,7 +240,7 @@ function Ensure-Defaults([string[]]$args) {
         $result.Add("--hooks")
         $result.Add("--mcp")
     }
-    foreach ($arg in $args) { $result.Add($arg) }
+    foreach ($arg in $Arguments) { $result.Add($arg) }
     return $result.ToArray()
 }
 

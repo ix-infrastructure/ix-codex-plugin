@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -243,6 +244,39 @@ class PowerShellInstaller(HostedInstallerCases, unittest.TestCase):
         self.base_env["PATH"] = os.pathsep.join(
             [str(Path(sys.executable).parent), self.base_env.get("PATH", "")]
         )
+
+
+class PowerShellPitfalls(unittest.TestCase):
+    """Static guards for two PowerShell traps; they run even where no PowerShell is installed.
+
+    The PowerShellInstaller cases above catch both at runtime, but only on a
+    host with pwsh, and the first only on one without the `py` launcher.
+    """
+
+    def ps_sources(self) -> dict[str, str]:
+        return {p.name: p.read_text(encoding="utf-8") for p in sorted(REPO.glob("*.ps1"))}
+
+    def test_no_parameter_is_named_args(self) -> None:
+        # `$args` is an automatic variable: a parameter of that name arrives
+        # empty, so the user's arguments are silently dropped.
+        for name, text in self.ps_sources().items():
+            for line in text.splitlines():
+                code = line.split("#", 1)[0]
+                if re.search(r"\bfunction\b.*\(.*\$args\b", code, re.IGNORECASE) or re.search(
+                    r"\bparam\s*\(.*\$args\b", code, re.IGNORECASE
+                ):
+                    self.fail(f"{name}: parameter named $args: {line.strip()}")
+
+    def test_python_command_is_returned_as_an_array(self) -> None:
+        # `return @("python")` is unrolled to the string "python", and then
+        # $pythonCmd[0] is "p". The leading comma keeps it an array.
+        text = PS_INSTALLER.read_text(encoding="utf-8")
+        body = re.search(r"function Get-PythonCommand \{(.*?)\n\}", text, re.DOTALL)
+        self.assertIsNotNone(body)
+        returns = re.findall(r"\breturn\s+(\S+)", body.group(1))  # type: ignore[union-attr]
+        self.assertTrue(returns)
+        for value in returns:
+            self.assertTrue(value.startswith(",@("), f"Get-PythonCommand returns {value!r} without a leading comma")
 
 
 class PinnedInstallDocs(unittest.TestCase):
