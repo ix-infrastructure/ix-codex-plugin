@@ -1,0 +1,67 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$PLUGIN_ROOT/hooks/session_start.py\"",
+            "commandWindows": "if (Get-Command py -ErrorAction SilentlyContinue) { & py -3 \"$env:PLUGIN_ROOT\\hooks\\session_start.py\" } else { & python \"$env:PLUGIN_ROOT\\hooks\\session_start.py\" }",
+            "statusMessage": "Loading Ix guidance"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$PLUGIN_ROOT/hooks/user_prompt_submit.py\"",
+            "commandWindows": "if (Get-Command py -ErrorAction SilentlyContinue) { & py -3 \"$env:PLUGIN_ROOT\\hooks\\user_prompt_submit.py\" } else { & python \"$env:PLUGIN_ROOT\\hooks\\user_prompt_submit.py\" }"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$PLUGIN_ROOT/hooks/pre_tool_use.py\"",
+            "commandWindows": "if (Get-Command py -ErrorAction SilentlyContinue) { & py -3 \"$env:PLUGIN_ROOT\\hooks\\pre_tool_use.py\" } else { & python \"$env:PLUGIN_ROOT\\hooks\\pre_tool_use.py\" }",
+            "statusMessage": "Checking with Ix"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$PLUGIN_ROOT/hooks/post_tool_use.py\"",
+            "commandWindows": "if (Get-Command py -ErrorAction SilentlyContinue) { & py -3 \"$env:PLUGIN_ROOT\\hooks\\post_tool_use.py\" } else { & python \"$env:PLUGIN_ROOT\\hooks\\post_tool_use.py\" }",
+            "statusMessage": "Updating Ix graph"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$PLUGIN_ROOT/hooks/stop.py\"",
+            "commandWindows": "if (Get-Command py -ErrorAction SilentlyContinue) { & py -3 \"$env:PLUGIN_ROOT\\hooks\\stop.py\" } else { & python \"$env:PLUGIN_ROOT\\hooks\\stop.py\" }",
+            "timeout": 10,
+            "statusMessage": "Refreshing Ix graph"
+          }
+        ]
+      }
+    ]
+  }
+}

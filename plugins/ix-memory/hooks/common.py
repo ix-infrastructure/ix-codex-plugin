@@ -4,10 +4,11 @@
 
 The helpers live beside this file:
 
-    ix_hookio      the event on stdin, the reply on stdout, the version file
     ix_proc        running `ix`: Windows resolution, the cmd.exe shim guard, output parsing
     ix_workspace   the project a payload belongs to (its git root, never `$HOME`)
     ix_state       the per-user state directory and its caches
+    ix_once        one run per event when two copies of the hooks are registered
+    ix_hookio      the event on stdin, the reply on stdout, the version file
     ix_probes      the health and Pro probes
     ix_lookup      graph lookups and the records ix answers them with
     ix_shellparse  the search pattern, read path and write targets of a shell command
@@ -56,10 +57,11 @@ _HOOKS_DIR = os.path.dirname(os.path.realpath(__file__))
 
 # Each module after the ones it imports from.
 _MODULE_NAMES = (
-    "ix_hookio",
     "ix_proc",
     "ix_workspace",
     "ix_state",
+    "ix_once",
+    "ix_hookio",
     "ix_probes",
     "ix_lookup",
     "ix_shellparse",

@@ -36,7 +36,7 @@ from unittest.mock import patch
 
 from hook_namespace import patch_everywhere, set_everywhere
 
-HOOKS_DIR = Path(__file__).resolve().parents[1] / ".codex" / "hooks"
+HOOKS_DIR = Path(__file__).resolve().parents[1] / "plugins" / "ix-memory" / "hooks"
 HAS_GIT = shutil.which("git") is not None
 REAL_RUN = subprocess.run
 # subprocess.run is built on Popen, so patching Popen reaches the real `git`

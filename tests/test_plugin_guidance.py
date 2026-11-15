@@ -77,7 +77,7 @@ def plugin_mentions() -> list[Mention]:
     found = []
     for path in paths:
         found.extend(mentions(path.read_text(encoding="utf-8"), str(path.relative_to(REPO))))
-    for path in sorted((REPO / ".codex" / "hooks").glob("*.py")):
+    for path in sorted((REPO / "plugins" / "ix-memory" / "hooks").glob("*.py")):
         source = str(path.relative_to(REPO))
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
@@ -123,7 +123,7 @@ def is_pro_stub_help(help_text: str, command: tuple[str, ...]) -> bool:
 
 
 def static_guidance() -> str:
-    tree = ast.parse((REPO / ".codex" / "hooks" / "session_start.py").read_text(encoding="utf-8"))
+    tree = ast.parse((REPO / "plugins" / "ix-memory" / "hooks" / "session_start.py").read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
             isinstance(target, ast.Name) and target.id == "_STATIC_GUIDANCE" for target in node.targets
@@ -178,6 +178,14 @@ class PluginGuidanceTest(unittest.TestCase):
         self.assertTrue(result[0].forbidden)
         self.assertEqual(frozenset({"--limit"}), result[0].flags)
         self.assertEqual([frozenset({"--path"})] * 2, [item.flags for item in result[1:]])
+
+    def test_planned_cli_commands_are_only_named_as_missing(self) -> None:
+        # The released CLI has no `ix hook` yet. CliHelpContract runs every
+        # documented command's --help, so naming it as if it existed fails there.
+        planned = [item for item in plugin_mentions() if item.command == ("hook",)]
+        for item in planned:
+            with self.subTest(source=item.source):
+                self.assertTrue(item.forbidden and not item.flags, item)
 
     def test_help_parser_ignores_examples_and_option_descriptions(self) -> None:
         text = "Options:\n  --path <path>  Like --invented\n  -h, --help  Help\nExamples:\n  ix locate x --limit 5"

@@ -8,16 +8,30 @@ import json
 import sys
 from pathlib import Path
 
+from ix_once import first_delivery
+
 
 def load_plugin_version() -> dict | None:
-    """Load the version metadata written by the installer into .codex/ix-plugin-version.json."""
-    version_file = Path(__file__).parent.parent / "ix-plugin-version.json"
-    if not version_file.exists():
-        return None
+    """The version this copy of the hooks belongs to.
+
+    A `--hooks` install has the installer's `.codex/ix-plugin-version.json` one
+    level up. The plugin's own copy (run by Codex from its install of the plugin,
+    or a symlink install resolved to the checkout) has the plugin manifest there.
+    """
+    root = Path(__file__).parent.parent
+    version_file = root / "ix-plugin-version.json"
+    if version_file.exists():
+        try:
+            return json.loads(version_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
     try:
-        return json.loads(version_file.read_text())
-    except (json.JSONDecodeError, OSError):
+        manifest = json.loads((root / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return None
+    if not isinstance(manifest, dict) or not manifest.get("version"):
+        return None
+    return {"plugin_name": manifest.get("name", "ix-memory"), "plugin_version": manifest["version"]}
 
 
 def read_event() -> dict:
@@ -28,7 +42,12 @@ def read_event() -> dict:
         payload = json.loads(raw)
     except json.JSONDecodeError:
         return {}
-    return payload if isinstance(payload, dict) else {}
+    if not isinstance(payload, dict):
+        return {}
+    # Only an event Codex sent: it always names the session and the event.
+    if payload.get("session_id") and payload.get("hook_event_name") and not first_delivery(raw):
+        raise SystemExit(0)  # another copy of these hooks is handling it
+    return payload
 
 
 def emit_json(payload: dict) -> None:

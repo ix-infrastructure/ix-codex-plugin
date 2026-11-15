@@ -39,7 +39,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[1]
-HOOKS_DIR = REPO / ".codex" / "hooks"
+HOOKS_DIR = REPO / "plugins" / "ix-memory" / "hooks"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from hook_namespace import point_caches_at  # noqa: E402

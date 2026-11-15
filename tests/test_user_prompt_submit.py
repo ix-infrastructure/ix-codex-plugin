@@ -24,7 +24,7 @@ from unittest.mock import patch
 
 from hook_namespace import patch_everywhere, point_caches_at
 
-HOOKS_DIR = Path(__file__).resolve().parents[1] / ".codex" / "hooks"
+HOOKS_DIR = Path(__file__).resolve().parents[1] / "plugins" / "ix-memory" / "hooks"
 
 
 def _load(name: str, cache_dir: Path):
