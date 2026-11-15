@@ -179,6 +179,14 @@ class PluginGuidanceTest(unittest.TestCase):
         self.assertEqual(frozenset({"--limit"}), result[0].flags)
         self.assertEqual([frozenset({"--path"})] * 2, [item.flags for item in result[1:]])
 
+    def test_planned_cli_commands_are_only_named_as_missing(self) -> None:
+        # The released CLI has no `ix hook` yet. CliHelpContract runs every
+        # documented command's --help, so naming it as if it existed fails there.
+        planned = [item for item in plugin_mentions() if item.command == ("hook",)]
+        for item in planned:
+            with self.subTest(source=item.source):
+                self.assertTrue(item.forbidden and not item.flags, item)
+
     def test_help_parser_ignores_examples_and_option_descriptions(self) -> None:
         text = "Options:\n  --path <path>  Like --invented\n  -h, --help  Help\nExamples:\n  ix locate x --limit 5"
         self.assertEqual({"--path", "--help"}, help_options(text))
