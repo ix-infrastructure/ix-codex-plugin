@@ -19,6 +19,8 @@ WRITE_SKIP_SUFFIXES = (
     ".pdf", ".png", ".tar", ".zip", ".lock", ".sum",
 )
 SEARCH_COMMANDS = {"grep", "rg"}
+# Shorter patterns match too much to be worth an `ix text` query.
+MIN_SEARCH_PATTERN_LENGTH = 3
 READ_COMMANDS = {"cat", "head", "tail", "sed", "awk"}
 REGEX_META_RE = re.compile(r"[\\^$\[\](){}|*+?]")
 SEARCH_VALUE_OPTIONS = {

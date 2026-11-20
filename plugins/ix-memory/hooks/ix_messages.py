@@ -10,7 +10,7 @@ from pathlib import Path
 
 from ix_lookup import describe_lookup, run_ix_lookup
 from ix_proc import run_ix_json, run_parallel
-from ix_shellparse import looks_plain_pattern, skip_read_path
+from ix_shellparse import MIN_SEARCH_PATTERN_LENGTH, looks_plain_pattern, skip_read_path
 from ix_summaries import (
     summarize_impact,
     summarize_inventory,
@@ -21,7 +21,7 @@ from ix_summaries import (
 
 
 def build_search_message(pattern: str, cwd: str | Path | None) -> str | None:
-    if len(pattern) < 3:
+    if len(pattern) < MIN_SEARCH_PATTERN_LENGTH:
         return None
 
     calls = [("text", run_ix_json, ["ix", "text", pattern, "--limit", "15", "--format", "json"], 10)]
