@@ -38,8 +38,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from hook_namespace import patch_everywhere, point_caches_at
+
 REPO = Path(__file__).resolve().parents[1]
-HOOKS_DIR = REPO / ".codex" / "hooks"
+HOOKS_DIR = REPO / "plugins" / "ix-memory" / "hooks"
 SCHEMAS = Path(__file__).resolve().parent / "fixtures" / "codex-0.155.1"
 
 SCHEMA_FILES = {
@@ -162,10 +164,7 @@ def _load(name: str, cache_dir: Path):
     common = importlib.util.module_from_spec(spec)
     sys.modules["common"] = common
     spec.loader.exec_module(common)
-    common.CACHE_DIR = cache_dir
-    common.STATUS_CACHE_PATH = cache_dir / "ix-status.json"
-    common.PRO_CACHE_PATH = cache_dir / "ix-pro.json"
-    common.BRIEFING_CACHE_PATH = cache_dir / "ix-briefing.txt"
+    point_caches_at(common, cache_dir)
     spec = importlib.util.spec_from_file_location(name, HOOKS_DIR / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -223,9 +222,9 @@ class HookOutputProtocolTest(unittest.TestCase):
         common, hook = _load(name, self.tmp / "state")
         ix = StrictIx(common.run_command)
         stdout = io.StringIO()
-        with patch.object(common, "ix_available", return_value=True), patch.object(
+        with patch_everywhere(common, "ix_available", return_value=True), patch_everywhere(
             common, "run_command", side_effect=ix
-        ), patch.object(common, "spawn_background_ix_map", return_value=True), patch.object(
+        ), patch_everywhere(common, "spawn_background_ix_map", return_value=True), patch.object(
             sys, "stdin", io.StringIO(json.dumps({"cwd": str(self.cwd), **event}))
         ), contextlib.redirect_stdout(stdout):
             hook.main()
@@ -333,7 +332,7 @@ class PreToolUseClassifiesFirstTest(unittest.TestCase):
             "tool_input": {"command": command},
         }
         no_process = AssertionError("the hook started a process")
-        with patch.object(self.common, "ix_available", return_value=True), patch.object(
+        with patch_everywhere(self.common, "ix_available", return_value=True), patch_everywhere(
             self.common, "run_command"
         ) as run_command, patch.object(subprocess, "run", side_effect=no_process), patch.object(
             subprocess, "Popen", side_effect=no_process

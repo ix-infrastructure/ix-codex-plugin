@@ -29,16 +29,20 @@ ix-codex-plugin hosted installer
 Usage:
   irm https://raw.githubusercontent.com/ix-infrastructure/ix-codex-plugin/main/codex-install.ps1 | iex
 
+  `$env:IX_CODEX_REF = "<tag>"; try { irm https://raw.githubusercontent.com/ix-infrastructure/ix-codex-plugin/<tag>/codex-install.ps1 | iex } finally { Remove-Item Env:IX_CODEX_REF }
+  .\codex-install.ps1 --ref <tag>
+
 Behavior:
-  - Clones or updates ix-codex-plugin into $SourceDir
+  - Fetches the requested ref of ix-codex-plugin into $SourceDir
   - Runs scripts/install_codex_integration.py from that checkout
   - Defaults to: --home --plugin --hooks --mcp
 
 Options:
+  --ref <ref>    Branch, tag or full commit SHA to install (overrides IX_CODEX_REF)
   All remaining arguments are forwarded to install_codex_integration.py.
 
 Environment:
-  IX_CODEX_REF   Branch or tag to install from (default: main)
+  IX_CODEX_REF   Branch, tag or full commit SHA to install from (default: main)
   IX_HOME        Base directory for the cached source checkout (default: ~/.ix)
 "@
 }
@@ -110,10 +114,13 @@ function Invoke-Git {
     return Invoke-Native -Command "git" -Arguments $Arguments -FailureMessage $FailureMessage
 }
 
+# Returns the command as an array: the leading comma stops PowerShell from
+# unrolling a one-element array into a bare string, which would make
+# $pythonCmd[0] the first character ("p") rather than "python".
 function Get-PythonCommand {
-    if (Get-Command py -ErrorAction SilentlyContinue) { return @("py", "-3") }
-    if (Get-Command python -ErrorAction SilentlyContinue) { return @("python") }
-    if (Get-Command python3 -ErrorAction SilentlyContinue) { return @("python3") }
+    if (Get-Command py -ErrorAction SilentlyContinue) { return ,@("py", "-3") }
+    if (Get-Command python -ErrorAction SilentlyContinue) { return ,@("python") }
+    if (Get-Command python3 -ErrorAction SilentlyContinue) { return ,@("python3") }
     Write-Err "Python 3 is required to run the Codex installer."
 }
 
@@ -140,16 +147,68 @@ function Repo-IsDirty {
     return -not [string]::IsNullOrWhiteSpace(($status | Out-String))
 }
 
+# `--ref <ref>` / `--ref=<ref>` is the installer's own; everything else is
+# forwarded to install_codex_integration.py.
+function Split-RefArgument([string[]]$Arguments) {
+    $rest = [System.Collections.Generic.List[string]]::new()
+    $requested = $null
+    $expectRef = $false
+    foreach ($arg in $Arguments) {
+        if ($expectRef) {
+            $requested = $arg
+            $expectRef = $false
+            continue
+        }
+        if ($arg -ceq "--ref") {
+            $expectRef = $true
+            continue
+        }
+        if ($arg.StartsWith("--ref=", [System.StringComparison]::Ordinal)) {
+            $requested = $arg.Substring(6)
+            continue
+        }
+        $rest.Add($arg)
+    }
+    if ($expectRef) { Write-Err "--ref needs a branch, tag or commit." }
+    return @{ Ref = $requested; Rest = $rest.ToArray() }
+}
+
+# The ref ends up as an argument to `git fetch`, so it must not be read as an
+# option there, and must name one ref rather than a `src:dst` refspec.
+function Assert-Ref([string]$Value) {
+    if ([string]::IsNullOrEmpty($Value) -or $Value.StartsWith("-") -or $Value.Contains(":") -or $Value -match '\s') {
+        Write-Err "Not a branch, tag or commit: '$Value'."
+    }
+}
+
+# Fetch $Ref into the existing checkout and check out exactly that commit.
+# FETCH_HEAD works the same for a branch, a tag (annotated or not) and a full
+# commit SHA, which `git clone --branch` does not accept.
+function Fetch-Ref {
+    # Same stderr-discarding Continue window as Repo-IsDirty: only the exit
+    # status matters, and a checkout from an interrupted first run has no origin.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $null = & git -C $SourceDir remote get-url origin 2>$null
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+    $remoteVerb = if ($LASTEXITCODE -eq 0) { "set-url" } else { "add" }
+    $null = Invoke-Git -Arguments @("-C", $SourceDir, "remote", $remoteVerb, "origin", $RepoUrl) -FailureMessage "Could not point $SourceDir at $RepoUrl."
+    $null = Invoke-Git -Arguments @("-C", $SourceDir, "fetch", "--quiet", "--depth", "1", "origin", $Ref) -FailureMessage "Could not fetch '$Ref' from $RepoUrl. Check the ref and your network, then try again."
+    $null = Invoke-Git -Arguments @("-C", $SourceDir, "checkout", "--quiet", "FETCH_HEAD") -FailureMessage "Fetched '$Ref' but could not check it out in $SourceDir."
+}
+
 function Sync-Repo {
     if (Test-Path (Join-Path $SourceDir ".git")) {
         if (Repo-IsDirty) {
             Write-Warn "Using existing checkout without updating because it has local changes: $SourceDir"
+            Write-Warn "The requested ref '$Ref' was not applied."
             return
         }
         Write-Ok "Updating cached source checkout in $SourceDir"
-        $null = Invoke-Git -Arguments @("-C", $SourceDir, "remote", "set-url", "origin", $RepoUrl) -FailureMessage "Could not point $SourceDir at $RepoUrl."
-        $null = Invoke-Git -Arguments @("-C", $SourceDir, "fetch", "--depth", "1", "origin", $Ref) -FailureMessage "Could not fetch $Ref from $RepoUrl. Check your network and try again."
-        $null = Invoke-Git -Arguments @("-C", $SourceDir, "checkout", "--quiet", "FETCH_HEAD") -FailureMessage "Fetched $Ref but could not check it out in $SourceDir."
+        Fetch-Ref
         return
     }
 
@@ -158,16 +217,19 @@ function Sync-Repo {
     }
 
     New-Item -ItemType Directory -Force -Path $IxHome | Out-Null
-    Write-Ok "Cloning ix-codex-plugin into $SourceDir"
-    $null = Invoke-Git -Arguments @("clone", "--depth", "1", "--branch", $Ref, $RepoUrl, $SourceDir) -FailureMessage "Could not clone $RepoUrl into $SourceDir."
+    Write-Ok "Fetching ix-codex-plugin into $SourceDir"
+    $null = Invoke-Git -Arguments @("-c", "init.defaultBranch=main", "init", "--quiet", $SourceDir) -FailureMessage "Could not create a git checkout in $SourceDir."
+    Fetch-Ref
 }
 
-function Ensure-Defaults([string[]]$args) {
+# Not `$args`: that is PowerShell's automatic variable, and a parameter of that
+# name arrives empty, silently replacing every user argument with the defaults.
+function Ensure-Defaults([string[]]$Arguments) {
     $result = [System.Collections.Generic.List[string]]::new()
     $hasTarget = $false
     $hasAction = $false
 
-    foreach ($arg in $args) {
+    foreach ($arg in $Arguments) {
         if ($arg -eq "--home" -or $arg -eq "--repo") { $hasTarget = $true }
         if ($arg -eq "--plugin" -or $arg -eq "--hooks" -or $arg -eq "--mcp") { $hasAction = $true }
     }
@@ -178,20 +240,36 @@ function Ensure-Defaults([string[]]$args) {
         $result.Add("--hooks")
         $result.Add("--mcp")
     }
-    foreach ($arg in $args) { $result.Add($arg) }
+    foreach ($arg in $Arguments) { $result.Add($arg) }
     return $result.ToArray()
 }
 
-if ($InstallerArgs.Count -gt 0 -and ($InstallerArgs[0] -eq "--help" -or $InstallerArgs[0] -eq "-h")) {
+$parsedArgs = Split-RefArgument $InstallerArgs
+$forwardArgs = $parsedArgs.Rest
+$refFromEnv = -not [string]::IsNullOrEmpty($env:IX_CODEX_REF)
+if ($null -ne $parsedArgs.Ref) {
+    $Ref = $parsedArgs.Ref
+    $refFromEnv = $false
+}
+
+if ($forwardArgs.Count -gt 0 -and ($forwardArgs[0] -eq "--help" -or $forwardArgs[0] -eq "-h")) {
     Show-HostedHelp
     exit 0
 }
 
+Assert-Ref $Ref
+# $env:IX_CODEX_REF lives for the whole session, so a later plain `irm | iex`
+# meant to install main would quietly reinstall the pinned ref. Say so.
+if ($refFromEnv -and $Ref -cne "main") {
+    Write-Warn "Installing '$Ref' because IX_CODEX_REF is set in this session; run 'Remove-Item Env:IX_CODEX_REF' to install main."
+}
 Require-Command git
 $pythonCmd = Get-PythonCommand
 Sync-Repo
+$installedCommit = Invoke-Git -Arguments @("-C", $SourceDir, "rev-parse", "HEAD") -FailureMessage "Could not read the checked-out commit in $SourceDir."
+Write-Ok "Installing from $(@($installedCommit)[0]) (requested: $Ref)"
 
-$effectiveArgs = Ensure-Defaults $InstallerArgs
+$effectiveArgs = Ensure-Defaults $forwardArgs
 $installer = Join-Path $SourceDir "scripts/install_codex_integration.py"
 $pythonArgs = @()
 if ($pythonCmd.Count -gt 1) {

@@ -2,3 +2,8 @@
 # Python bytecode
 __pycache__/
 *.pyc
+
+# What `./install.sh --repo . --hooks` writes into this checkout. The scripts
+# live in plugins/ix-memory/hooks/; .codex/hooks.json is the tracked source.
+/.codex/hooks/
+/.codex/ix-plugin-version.json
